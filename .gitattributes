@@ -1,0 +1,14 @@
+# 自动规范所有文本文件的换行符
+* text=auto
+
+# 强制脚本文件使用特定换行符
+*.{cmd,[cC][mM][dD]} text eol=crlf  # Windows脚本需CRLF
+*.{bat,[bB][aA][tT]} text eol=crlf
+*.{ics,[iI][cC][sS]} text eol=crlf
+
+# Bash脚本强制使用LF（Unix风格）
+*.sh text eol=lf
+
+# YAML文件规范化（如CI/CD配置）
+*.yaml text=auto
+*.yml text=auto
