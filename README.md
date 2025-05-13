@@ -2,7 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-A C++20 toy project for learning Vulkan graphics programming. Minimalist design for educational purposes.Only tested 64-bit.
+A C++20 toy project for learning Vulkan graphics programming. Minimalist design for educational purposes. Only tested 64-bit.
 ---
 
 ## 🔧 Dependencies

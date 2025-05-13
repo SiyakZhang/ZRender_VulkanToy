@@ -1,17 +1,19 @@
 #include "VKBase.h"
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
-#pragma comment(lib, "glfw3.lib") //Á´½Ó±àÒëËùÐèµÄ¾²Ì¬¿â
+#pragma comment(lib, "glfw3.lib") //é“¾æŽ¥ç¼–è¯‘æ‰€éœ€çš„é™æ€åº“
 
-//´°¿ÚµÄÖ¸Õë£¬È«¾Ö±äÁ¿×Ô¶¯³õÊ¼»¯ÎªNULL
+//çª—å£çš„æŒ‡é’ˆï¼Œå…¨å±€å˜é‡è‡ªåŠ¨åˆå§‹åŒ–ä¸ºNULL
 GLFWwindow* pWindow;
-//ÏÔÊ¾Æ÷ÐÅÏ¢µÄÖ¸Õë
+//æ˜¾ç¤ºå™¨ä¿¡æ¯çš„æŒ‡é’ˆ
 GLFWmonitor* pMonitor;
-//´°¿Ú±êÌâ
+//çª—å£æ ‡é¢˜
 const char* windowTitle = "ZRender";
 
-bool InitializeWindow(VkExtent2D size, bool fullScreen = false, bool isResizable = true, bool limitFrameRate = true) {
-    if (!glfwInit()) {
+bool InitializeWindow(VkExtent2D size, bool fullScreen = false, bool isResizable = true, bool limitFrameRate = true)
+{
+    if (!glfwInit())
+    {
         std::cout << std::format("[ InitializeWindow ] ERROR\nFailed to initialize GLFW!\n");
         return false;
     }
@@ -19,23 +21,27 @@ bool InitializeWindow(VkExtent2D size, bool fullScreen = false, bool isResizable
     glfwWindowHint(GLFW_RESIZABLE, isResizable);
     pMonitor = glfwGetPrimaryMonitor();
     const GLFWvidmode* pMode = glfwGetVideoMode(pMonitor);
-    pWindow = fullScreen ?
-        glfwCreateWindow(pMode->width, pMode->height, windowTitle, pMonitor, nullptr) :
-        glfwCreateWindow(size.width, size.height, windowTitle, nullptr, nullptr);
-    if (!pWindow) {
+    pWindow = fullScreen
+                  ? glfwCreateWindow(pMode->width, pMode->height, windowTitle, pMonitor, nullptr)
+                  : glfwCreateWindow(size.width, size.height, windowTitle, nullptr, nullptr);
+    if (!pWindow)
+    {
         std::cout << std::format("[ InitializeWindow ]\nFailed to create a glfw window!\n");
         glfwTerminate();
         return false;
     }
-    /*´ýCh1-3ºÍCh1-4Ìî³ä*/
+    /*å¾…Ch1-3å’ŒCh1-4å¡«å……*/
     return true;
 }
-void TerminateWindow() {
-    /*´ýCh1-4Ìî³ä*/
+
+void TerminateWindow()
+{
+    /*å¾…Ch1-4å¡«å……*/
     glfwTerminate();
 }
 
-void TitleFps() {
+void TitleFps()
+{
     static double time0 = glfwGetTime();
     static double time1;
     static double dt;
@@ -43,20 +49,25 @@ void TitleFps() {
     static std::stringstream info;
     time1 = glfwGetTime();
     dframe++;
-    if ((dt = time1 - time0) >= 1) {
+    if ((dt = time1 - time0) >= 1)
+    {
         info.precision(1);
         info << windowTitle << "    " << std::fixed << dframe / dt << " FPS";
         glfwSetWindowTitle(pWindow, info.str().c_str());
-        info.str("");//±ðÍüÁËÔÚÉèÖÃÍê´°¿Ú±êÌâºóÇå¿ÕËùÓÃµÄstringstream
+        info.str(""); //åˆ«å¿˜äº†åœ¨è®¾ç½®å®Œçª—å£æ ‡é¢˜åŽæ¸…ç©ºæ‰€ç”¨çš„stringstream
         time0 = time1;
         dframe = 0;
     }
 }
-void MakeWindowFullScreen() {
+
+void MakeWindowFullScreen()
+{
     const GLFWvidmode* pMode = glfwGetVideoMode(pMonitor);
     glfwSetWindowMonitor(pWindow, pMonitor, 0, 0, pMode->width, pMode->height, pMode->refreshRate);
 }
-void MakeWindowWindowed(VkOffset2D position, VkExtent2D size) {
+
+void MakeWindowWindowed(VkOffset2D position, VkExtent2D size)
+{
     const GLFWvidmode* pMode = glfwGetVideoMode(pMonitor);
     glfwSetWindowMonitor(pWindow, nullptr, position.x, position.y, size.width, size.height, pMode->refreshRate);
 }

@@ -1,11 +1,12 @@
 #include "GlfwGeneral.hpp"
 
-int main() {
-    if (!InitializeWindow({ 1280,720 }))
-        return -1;//À´¸öÄãÌÖÑáµÄ·µ»ØÖµ
-    while (!glfwWindowShouldClose(pWindow)) {
-
-        /*äÖÈ¾¹ı³Ì£¬´ıÌî³ä*/
+int main()
+{
+    if (!InitializeWindow({1280, 720}))
+        return -1; //æ¥ä¸ªä½ è®¨åŒçš„è¿”å›å€¼
+    while (!glfwWindowShouldClose(pWindow))
+    {
+        /*æ¸²æŸ“è¿‡ç¨‹ï¼Œå¾…å¡«å……*/
 
         glfwPollEvents();
         TitleFps();
