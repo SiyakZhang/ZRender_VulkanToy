@@ -1,3 +1,4 @@
+#pragma once
 #include "VKBase.h"
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
@@ -19,6 +20,15 @@ bool InitializeWindow(VkExtent2D size, bool fullScreen = false, bool isResizable
     }
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
     glfwWindowHint(GLFW_RESIZABLE, isResizable);
+    uint32_t extensionCount = 0;
+    const char** extensionNames = glfwGetRequiredInstanceExtensions(&extensionCount);
+    if (!extensionNames) {
+        std::cout << std::format("[ InitializeWindow ]\nVulkan is not available on this machine!\n");
+        glfwTerminate();
+        return false;
+    }
+    for (size_t i = 0; i < extensionCount; i++)
+        vulkan::graphicsBase::Base().AddInstanceExtension(extensionNames[i]);
     pMonitor = glfwGetPrimaryMonitor();
     const GLFWvidmode* pMode = glfwGetVideoMode(pMonitor);
     pWindow = fullScreen
