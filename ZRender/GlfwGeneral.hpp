@@ -22,6 +22,11 @@ bool InitializeWindow(VkExtent2D size, bool fullScreen = false, bool isResizable
     glfwWindowHint(GLFW_RESIZABLE, isResizable);
     uint32_t extensionCount = 0;
     const char** extensionNames = glfwGetRequiredInstanceExtensions(&extensionCount);
+
+    vulkan::graphicsBase::Base().AddInstanceExtension("VK_KHR_surface");
+    vulkan::graphicsBase::Base().AddInstanceExtension("VK_KHR_win32_surface");
+    vulkan::graphicsBase::Base().AddDeviceExtension(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
+    
     if (!extensionNames) {
         std::cout << std::format("[ InitializeWindow ]\nVulkan is not available on this machine!\n");
         glfwTerminate();

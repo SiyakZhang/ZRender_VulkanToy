@@ -71,7 +71,40 @@ namespace vulkan
         //该函数用于创建Vulkan实例
         VkResult CreateInstance(VkInstanceCreateFlags flags = 0)
         {
-            /*待Ch1-3填充*/
+#ifndef NDEBUG
+            AddInstanceLayer("VK_LAYER_KHRONOS_validation");
+            AddInstanceExtension(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+#endif
+            VkApplicationInfo applicationInfo = {
+                .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
+                .apiVersion = apiVersion
+            };
+            const VkInstanceCreateInfo instanceCreateInfo = {
+                .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
+                .flags = flags,
+                .pApplicationInfo = &applicationInfo,
+                .enabledLayerCount = uint32_t(instanceLayers.size()),
+                .ppEnabledLayerNames = instanceLayers.data(),
+                .enabledExtensionCount = uint32_t(instanceExtensions.size()),
+                .ppEnabledExtensionNames = instanceExtensions.data()
+            };
+            if (const VkResult result = vkCreateInstance(&instanceCreateInfo, nullptr, &instance); result != VK_SUCCESS)
+            {
+                std::cout << std::format(
+                    "[ graphicsBase ] ERROR\nFailed to create a vulkan instance!\nError code: {}\n", int32_t(result));
+                return result;
+            }
+            //成功创建Vulkan实例后，输出Vulkan版本
+            std::cout << std::format(
+                "Vulkan API Version: {}.{}.{}\n",
+                VK_VERSION_MAJOR(apiVersion),
+                VK_VERSION_MINOR(apiVersion),
+                VK_VERSION_PATCH(apiVersion));
+#ifndef NDEBUG
+            //创建完Vulkan实例后紧接着创建debug messenger
+            CreateDebugMessenger();
+#endif
+            return VK_SUCCESS;
         }
 
         //以下函数用于创建Vulkan实例失败后
@@ -119,6 +152,13 @@ namespace vulkan
         {
             if (!this->surface)
                 this->surface = surface;
+        }
+
+        VkResult UseLatestApiVersion()
+        {
+            if (vkGetInstanceProcAddr(VK_NULL_HANDLE, "vkEnumerateInstanceVersion"))
+                return vkEnumerateInstanceVersion(&apiVersion);
+            return VK_SUCCESS;
         }
 
     private:
@@ -249,59 +289,81 @@ namespace vulkan
         }
 
     private:
-        std::vector <VkSurfaceFormatKHR> availableSurfaceFormats;
+        std::vector<VkSurfaceFormatKHR> availableSurfaceFormats;
 
         VkSwapchainKHR swapchain;
-        std::vector <VkImage> swapchainImages;
-        std::vector <VkImageView> swapchainImageViews;
+        std::vector<VkImage> swapchainImages;
+        std::vector<VkImageView> swapchainImageViews;
         //保存交换链的创建信息以便重建交换链
         VkSwapchainCreateInfoKHR swapchainCreateInfo = {};
 
         //该函数被CreateSwapchain(...)和RecreateSwapchain()调用
-        VkResult CreateSwapchain_Internal() {
+        VkResult CreateSwapchain_Internal()
+        {
             /*待Ch1-4填充*/
         }
 
     public:
         //Getter
-        const VkFormat& AvailableSurfaceFormat(uint32_t index) const {
+        const VkFormat& AvailableSurfaceFormat(uint32_t index) const
+        {
             return availableSurfaceFormats[index].format;
         }
-        const VkColorSpaceKHR& AvailableSurfaceColorSpace(uint32_t index) const {
+
+        const VkColorSpaceKHR& AvailableSurfaceColorSpace(uint32_t index) const
+        {
             return availableSurfaceFormats[index].colorSpace;
         }
-        uint32_t AvailableSurfaceFormatCount() const {
+
+        uint32_t AvailableSurfaceFormatCount() const
+        {
             return uint32_t(availableSurfaceFormats.size());
         }
 
-        VkSwapchainKHR Swapchain() const {
+        VkSwapchainKHR Swapchain() const
+        {
             return swapchain;
         }
-        VkImage SwapchainImage(uint32_t index) const {
+
+        VkImage SwapchainImage(uint32_t index) const
+        {
             return swapchainImages[index];
         }
-        VkImageView SwapchainImageView(uint32_t index) const {
+
+        VkImageView SwapchainImageView(uint32_t index) const
+        {
             return swapchainImageViews[index];
         }
-        uint32_t SwapchainImageCount() const {
+
+        uint32_t SwapchainImageCount() const
+        {
             return uint32_t(swapchainImages.size());
         }
-        const VkSwapchainCreateInfoKHR& SwapchainCreateInfo() const {
+
+        const VkSwapchainCreateInfoKHR& SwapchainCreateInfo() const
+        {
             return swapchainCreateInfo;
         }
 
-        VkResult GetSurfaceFormats() {
+        VkResult GetSurfaceFormats()
+        {
             /*待Ch1-4填充*/
         }
-        VkResult SetSurfaceFormat(VkSurfaceFormatKHR surfaceFormat) {
+
+        VkResult SetSurfaceFormat(VkSurfaceFormatKHR surfaceFormat)
+        {
             /*待Ch1-4填充*/
         }
+
         //该函数用于创建交换链
-        VkResult CreateSwapchain(bool limitFrameRate = true, VkSwapchainCreateFlagsKHR flags = 0) {
+        VkResult CreateSwapchain(bool limitFrameRate = true, VkSwapchainCreateFlagsKHR flags = 0)
+        {
             /*待Ch1-4填充*/
         }
+
         //该函数用于重建交换链
-        VkResult RecreateSwapchain() {
+        VkResult RecreateSwapchain()
+        {
             /*待Ch1-4填充*/
         }
 
@@ -310,10 +372,13 @@ namespace vulkan
 
     public:
         //Getter
-        uint32_t ApiVersion() const {
+        uint32_t ApiVersion() const
+        {
             return apiVersion;
         }
-        VkResult UseLatestApiVersion() {
+
+        VkResult UseLatestApiVersion()
+        {
             /*待Ch1-3填充*/
         }
     };
