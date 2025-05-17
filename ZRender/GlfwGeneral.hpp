@@ -13,6 +13,8 @@ const char* windowTitle = "ZRender";
 
 bool InitializeWindow(VkExtent2D size, bool fullScreen = false, bool isResizable = true, bool limitFrameRate = true)
 {
+    using namespace vulkan;
+
     if (!glfwInit())
     {
         std::cout << std::format("[ InitializeWindow ] ERROR\nFailed to initialize GLFW!\n");
@@ -20,24 +22,10 @@ bool InitializeWindow(VkExtent2D size, bool fullScreen = false, bool isResizable
     }
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
     glfwWindowHint(GLFW_RESIZABLE, isResizable);
-    uint32_t extensionCount = 0;
-    const char** extensionNames = glfwGetRequiredInstanceExtensions(&extensionCount);
-
-    vulkan::graphicsBase::Base().AddInstanceExtension("VK_KHR_surface");
-    vulkan::graphicsBase::Base().AddInstanceExtension("VK_KHR_win32_surface");
-    vulkan::graphicsBase::Base().AddDeviceExtension(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
-    
-    if (!extensionNames) {
-        std::cout << std::format("[ InitializeWindow ]\nVulkan is not available on this machine!\n");
-        glfwTerminate();
-        return false;
-    }
-    for (size_t i = 0; i < extensionCount; i++)
-        vulkan::graphicsBase::Base().AddInstanceExtension(extensionNames[i]);
     pMonitor = glfwGetPrimaryMonitor();
     const GLFWvidmode* pMode = glfwGetVideoMode(pMonitor);
     pWindow = fullScreen
-                  ? glfwCreateWindow(pMode->width, pMode->height, windowTitle, pMonitor, nullptr)
+                  ? glfwCreateWindow(size.width, size.height, windowTitle, pMonitor, nullptr)
                   : glfwCreateWindow(size.width, size.height, windowTitle, nullptr, nullptr);
     if (!pWindow)
     {
@@ -45,7 +33,50 @@ bool InitializeWindow(VkExtent2D size, bool fullScreen = false, bool isResizable
         glfwTerminate();
         return false;
     }
-    /*待Ch1-3和Ch1-4填充*/
+
+    //本节新增--------------------------------
+#ifdef _WIN32
+    graphicsBase::Base().AddInstanceExtension(VK_KHR_SURFACE_EXTENSION_NAME);
+    graphicsBase::Base().AddInstanceExtension(VK_KHR_WIN32_SURFACE_EXTENSION_NAME);
+#else
+    uint32_t extensionCount = 0;
+    const char** extensionNames;
+    extensionNames = glfwGetRequiredInstanceExtensions(&extensionCount);
+    if (!extensionNames) {
+        std::cout << std::format("[ InitializeWindow ]\nVulkan is not available on this machine!\n");
+        glfwTerminate();
+        return false;
+    }
+    for (size_t i = 0; i < extensionCount; i++)
+        graphicsBase::Base().AddInstanceExtension(extensionNames[i]);
+#endif
+    graphicsBase::Base().AddDeviceExtension(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
+    //在创建window surface前创建Vulkan实例
+    graphicsBase::Base().UseLatestApiVersion();
+    if (graphicsBase::Base().CreateInstance())
+        return false;
+
+    //创建window surface
+    VkSurfaceKHR surface = VK_NULL_HANDLE;
+    if (VkResult result = glfwCreateWindowSurface(graphicsBase::Base().Instance(), pWindow, nullptr, &surface))
+    {
+        std::cout << std::format("[ InitializeWindow ] ERROR\nFailed to create a window surface!\nError code: {}\n", int32_t(result));
+        glfwTerminate();
+        return false;
+    }
+    graphicsBase::Base().Surface(surface);
+
+    //通过用||操作符短路执行来省去几行
+    if ( //获取物理设备，并使用列表中的第一个物理设备，这里不考虑以下任意函数失败后更换物理设备的情况
+        graphicsBase::Base().GetPhysicalDevices() ||
+        //一个true一个false，暂时不需要计算用的队列
+        graphicsBase::Base().DeterminePhysicalDevice(0, true, false) ||
+        //创建逻辑设备
+        graphicsBase::Base().CreateDevice())
+        return false;
+    //----------------------------------------
+
+    /*待Ch1-4填充*/
     return true;
 }
 
