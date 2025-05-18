@@ -49,7 +49,7 @@ int main() {
 	CreateLayout();
 	CreatePipeline();
 
-	fence fence;
+	fence fence(VK_FENCE_CREATE_SIGNALED_BIT); //以置位状态创建栅栏
 	semaphore semaphore_imageIsAvailable;
 	semaphore semaphore_renderingIsOver;
 
@@ -79,7 +79,7 @@ int main() {
 		glfwPollEvents();
 		TitleFps();
 
-		fence.WaitAndReset();
+		fence.WaitAndReset(); //等待并重置fence
 	}
 	TerminateWindow();
 	return 0;

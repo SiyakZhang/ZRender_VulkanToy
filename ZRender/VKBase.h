@@ -385,6 +385,7 @@ namespace vulkan
         VkQueue queue_graphics;
         VkQueue queue_presentation;
         VkQueue queue_compute;
+        //当前取得的交换链图像索引
         uint32_t currentImageIndex = 0;
         std::vector<const char*> deviceExtensions;
 
@@ -994,14 +995,17 @@ namespace vulkan
             return VK_SUCCESS;
         }
 
+        //该函数用于获取交换链图像索引到currentImageIndex，以及在需要重建交换链时调用RecreateSwapchain()、重建交换链后销毁旧交换链
         result_t SwapImage(VkSemaphore semaphore_imageIsAvailable)
         {
+            //销毁旧交换链（若存在）
             if (swapchainCreateInfo.oldSwapchain &&
                 swapchainCreateInfo.oldSwapchain != swapchain)
             {
                 vkDestroySwapchainKHR(device, swapchainCreateInfo.oldSwapchain, nullptr);
                 swapchainCreateInfo.oldSwapchain = VK_NULL_HANDLE;
             }
+            //获取交换链图像索引
             while (VkResult result = vkAcquireNextImageKHR(device, swapchain, UINT64_MAX, semaphore_imageIsAvailable, VK_NULL_HANDLE, &currentImageIndex))
                 switch (result)
                 {
@@ -1009,7 +1013,7 @@ namespace vulkan
                 case VK_ERROR_OUT_OF_DATE_KHR:
                     if (VkResult result = RecreateSwapchain())
                         return result;
-                    break;
+                    break; //注意重建交换链后仍需要获取图像，通过break递归，再次执行while的条件判定语句
                 default:
                     outStream << std::format("[ graphicsBase ] ERROR\nFailed to acquire the next image!\nError code: {}\n", int32_t(result));
                     return result;
@@ -1017,6 +1021,7 @@ namespace vulkan
             return VK_SUCCESS;
         }
 
+        //该函数用于将命令缓冲区提交到用于图形的队列
         result_t SubmitCommandBuffer_Graphics(VkCommandBuffer commandBuffer,
                                               VkSemaphore semaphore_imageIsAvailable = VK_NULL_HANDLE, VkSemaphore semaphore_renderingIsOver = VK_NULL_HANDLE, VkFence fence = VK_NULL_HANDLE,
                                               VkPipelineStageFlags waitDstStage_imageIsAvailable = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT) const
@@ -1035,6 +1040,7 @@ namespace vulkan
             return SubmitCommandBuffer_Graphics(submitInfo, fence);
         }
 
+        //该函数用于在渲染循环中将命令缓冲区提交到图形队列的常见情形
         result_t SubmitCommandBuffer_Graphics(VkCommandBuffer commandBuffer, VkFence fence = VK_NULL_HANDLE) const
         {
             VkSubmitInfo submitInfo = {
@@ -1044,6 +1050,7 @@ namespace vulkan
             return SubmitCommandBuffer_Graphics(submitInfo, fence);
         }
 
+        //该函数用于将命令缓冲区提交到用于图形的队列，且只使用栅栏的常见情形
         result_t SubmitCommandBuffer_Graphics(VkSubmitInfo& submitInfo, VkFence fence = VK_NULL_HANDLE) const
         {
             submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
@@ -1053,6 +1060,7 @@ namespace vulkan
             return result;
         }
 
+        //该函数用于将命令缓冲区提交到用于计算的队列
         result_t SubmitCommandBuffer_Compute(VkSubmitInfo& submitInfo, VkFence fence = VK_NULL_HANDLE) const
         {
             submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
@@ -1062,6 +1070,7 @@ namespace vulkan
             return result;
         }
 
+        //该函数用于将命令缓冲区提交到用于计算的队列，且只使用栅栏的常见情形
         result_t SubmitCommandBuffer_Compute(VkCommandBuffer commandBuffer, VkFence fence = VK_NULL_HANDLE) const
         {
             VkSubmitInfo submitInfo = {
@@ -1095,11 +1104,12 @@ namespace vulkan
 
         void CmdTransferImageOwnership(VkCommandBuffer commandBuffer) const
         {
+            //这个VkImageMemoryBarrier可以跟上文的一模一样
             VkImageMemoryBarrier imageMemoryBarrier_g2p = {
                 .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
                 .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-                .dstAccessMask = 0,
-                .oldLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+                .dstAccessMask = 0, //因为vkCmdPipelineBarrier(...)的参数中dstStage是BOTTOM_OF_PIPE，不需要dstAccessMask
+                .oldLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, //内存布局已经在渲染通道结束时转换（这是下一节的内容），此处oldLayout和newLayout相同，不发生转变
                 .newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
                 .srcQueueFamilyIndex = queueFamilyIndex_graphics,
                 .dstQueueFamilyIndex = queueFamilyIndex_presentation,
@@ -1126,6 +1136,7 @@ namespace vulkan
             }
         }
 
+        //该函数用于在渲染循环中呈现图像的常见情形
         result_t PresentImage(VkSemaphore semaphore_renderingIsOver = VK_NULL_HANDLE)
         {
             VkPresentInfoKHR presentInfo = {
