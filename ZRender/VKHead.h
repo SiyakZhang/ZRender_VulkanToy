@@ -17,7 +17,6 @@
 
 //GLM
 #define GLM_FORCE_DEPTH_ZERO_TO_ONE
-
 //如果你惯用左手坐标系，在此定义GLM_FORCE_LEFT_HANDED
 #include <glm.hpp>
 #include <gtc/matrix_transform.hpp>
@@ -29,6 +28,104 @@
 #pragma comment(lib, "vulkan-1.lib") //链接编译所需的静态存根库
 #endif
 #include <vulkan/vulkan.h>
+
+/**
+ * @brief 一个轻量级的非拥有（non-owning）数组引用封装类
+ * 
+ * 该类提供对连续内存数据的引用访问，支持原生数组、动态数组和单个对象的统一接口。
+ * 不管理内存生命周期，使用者需确保数据在引用期间的合法性。
+ * 不可复制赋值，但允许通过拷贝构造函数进行 const 到 non-const 的跨类型引用。
+ * 
+ * @tparam T 数组元素类型（const 修饰将影响元素的可修改性）
+ */
+template <typename T>
+class arrayRef
+{
+    T* const pArray = nullptr; ///< 指向数组首元素的常量指针（不可改变指向，但元素可能可修改）
+    size_t count = 0; ///< 数组元素数量（不可变，由构造函数初始化）
+
+public:
+    /// 默认构造空引用（指向 nullptr，元素数为 0）
+    arrayRef() = default;
+
+    /**
+     * @brief 从单个对象构造数组引用（视为单元素数组）
+     * @warning 注意传入对象的生命周期管理，引用不负责对象生存期
+     */
+    arrayRef(T& data) : pArray(&data), count(1)
+    {
+    }
+
+    /**
+     * @brief 从静态数组构造引用（自动推导元素数量）
+     * @tparam elementCount 数组元素个数（由编译器自动推导）
+     * @param data 静态数组的引用（需保持数组在作用域内有效）
+     */
+    template <size_t elementCount>
+    arrayRef(T (&data)[elementCount]) : pArray(data), count(elementCount)
+    {
+    }
+
+    /**
+     * @brief 从指针+元素数量构造引用
+     * @param pData 数组起始指针（需保证至少包含 elementCount 个有效元素）
+     * @param elementCount 数组元素个数（必须 >=0）
+     */
+    arrayRef(T* pData, size_t elementCount) : pArray(pData), count(elementCount)
+    {
+    }
+
+    /**
+     * @brief 跨 const 类型拷贝构造（允许从 non-const arrayRef 构造 const arrayRef）
+     * @note 例如：arrayRef<const int> 可以从 arrayRef<int> 构造
+     */
+    arrayRef(const arrayRef<std::remove_const_t<T>>& other)
+        : pArray(other.Pointer()), count(other.Count())
+    {
+    }
+
+    //=== 访问接口 ===//
+    /// 获取原始指针（指向第一个元素，可能为 nullptr）
+    T* Pointer() const
+    {
+        return pArray;
+    }
+
+    /// 获取元素数量（可能为 0）
+    size_t Count() const
+    {
+        return count;
+    }
+
+    //=== 元素访问 ===//
+    /**
+     * @brief 下标访问运算符（无边界检查）
+     * @param index 元素位置（必须满足 0 <= index < count）
+     * @return T& 元素的可变引用（当 T 为 const 类型时为只读引用）
+     */
+    T& operator[](size_t index) const
+    {
+        return pArray[index];
+    }
+
+    /// 起始迭代器（指向第一个元素）
+    T* begin() const
+    {
+        return pArray;
+    }
+
+    /// 结束迭代器（指向最后一个元素的下一个位置）
+    T* end() const
+    {
+        return pArray + count;
+    }
+
+    //=== 禁止赋值操作 ===//
+    arrayRef& operator=(const arrayRef&) = delete; ///< 禁用赋值（保持引用不变性）
+};
+
+#define ExecuteOnce(...) { static bool executed = false; if (executed) return __VA_ARGS__; executed = true; }
+
 
 #ifndef STBI_INCLUDE_STB_IMAGE_H
 #define STBI_INCLUDE_STB_IMAGE_H
