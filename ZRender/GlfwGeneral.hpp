@@ -5,11 +5,11 @@
 #pragma comment(lib, "glfw3.lib") //链接编译所需的静态库
 
 //窗口的指针，全局变量自动初始化为NULL
-GLFWwindow* pWindow;
+inline GLFWwindow* pWindow;
 //显示器信息的指针
-GLFWmonitor* pMonitor;
+inline GLFWmonitor* pMonitor;
 //窗口标题
-const char* windowTitle = "ZRender";
+inline auto windowTitle = "ZRender";
 
 bool InitializeWindow(VkExtent2D size, bool fullScreen = false, bool isResizable = true, bool limitFrameRate = true)
 {
@@ -34,7 +34,6 @@ bool InitializeWindow(VkExtent2D size, bool fullScreen = false, bool isResizable
         return false;
     }
 
-    //本节新增--------------------------------
 #ifdef _WIN32
     graphicsBase::Base().AddInstanceExtension(VK_KHR_SURFACE_EXTENSION_NAME);
     graphicsBase::Base().AddInstanceExtension(VK_KHR_WIN32_SURFACE_EXTENSION_NAME);
@@ -74,15 +73,14 @@ bool InitializeWindow(VkExtent2D size, bool fullScreen = false, bool isResizable
         //创建逻辑设备
         graphicsBase::Base().CreateDevice())
         return false;
-    //----------------------------------------
-
-    /*待Ch1-4填充*/
+    if (graphicsBase::Base().CreateSwapchain(limitFrameRate))
+        return false;
     return true;
 }
 
 void TerminateWindow()
 {
-    /*待Ch1-4填充*/
+    vulkan::graphicsBase::Base().WaitIdle();
     glfwTerminate();
 }
 
