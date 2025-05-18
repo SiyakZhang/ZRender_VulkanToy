@@ -1,32 +1,44 @@
-# Prerequisites
-*.d
+# IDE 与本地配置目录。
+.idea/
+.vs/
 
-# Compiled Object files
-*.slo
-*.lo
-*.o
+# Visual Studio 用户态文件。
+*.user
+*.suo
+*.DotSettings.user
+
+# 常见构建输出目录。
+Debug/
+Release/
+x64/
+x86/
+build/
+cmake-build-*/
+
+# 工程内二级输出目录。
+ZRender/Debug/
+ZRender/Release/
+ZRender/x64/
+ZRender/x86/
+
+# 中间产物与调试数据库。
 *.obj
+*.idb
+*.ipdb
+*.pdb
+*.ilk
+*.tlog
+*.lastbuildstate
+*.recipe
+*.FileListAbsolute.txt
 
-# Precompiled Headers
-*.gch
-*.pch
-
-# Compiled Dynamic libraries
+# 可执行文件与动态库。
+*.exe
+*.dll
 *.so
 *.dylib
-*.dll
 
-# Fortran module files
-*.mod
-*.smod
-
-# Compiled Static libraries
-*.lai
-*.la
-*.a
-*.lib
-
-# Executables
-*.exe
-*.out
-*.app
+# 其他编译缓存。
+*.log
+*.db
+*.opendb
