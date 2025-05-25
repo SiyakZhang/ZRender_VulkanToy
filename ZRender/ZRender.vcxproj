@@ -142,6 +142,7 @@
     <ClCompile Include="main.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="GlfwGeneral.hpp" />
     <ClInclude Include="VKBase.h" />
     <ClInclude Include="VKHead.h" />
   </ItemGroup>
