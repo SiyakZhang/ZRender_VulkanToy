@@ -1,127 +1,124 @@
 #pragma once
-
 #include "VKBase.h"
-
-// 让 GLFW 自动包含 Vulkan 相关声明，后续创建 surface 时会直接用到。
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
+#pragma comment(lib, "glfw3.lib") //链接编译所需的静态库
 
-// 直接链接 GLFW 静态库，方便 Visual Studio 工程使用。
-#pragma comment(lib, "glfw3.lib")
-
-// 保存主窗口指针，后续各章节都会复用。
+// 窗口指针会在成功创建窗口后指向 GLFW 窗口对象。
 inline GLFWwindow* pWindow = nullptr;
 
-// 保存主显示器指针，方便后续切换全屏与窗口模式。
+// 显示器指针会在切换全屏时复用。
 inline GLFWmonitor* pMonitor = nullptr;
 
-// 统一窗口标题，后续会在标题上叠加 FPS。
+// 窗口标题在前期保持固定，后面会叠加 FPS。
 inline constexpr char windowTitle[] = "ZRender";
 
-bool InitializeWindow(
-    VkExtent2D size,
-    bool fullScreen = false,
-    bool isResizable = true)
+bool InitializeWindow(VkExtent2D size, bool fullScreen = false, bool isResizable = true, bool limitFrameRate = true)
 {
-    // 第一步先初始化 GLFW 运行时。
+    using namespace vulkan;
+
+    // 当前章节还不会创建交换链，所以这个参数先保留给下一课使用。
+    (void)limitFrameRate;
+
     if (!glfwInit())
     {
-        vulkan::outStream << "[ InitializeWindow ] ERROR\n";
-        vulkan::outStream << "Failed to initialize GLFW.\n";
+        std::cout << std::format("[ InitializeWindow ] ERROR\nFailed to initialize GLFW!\n");
         return false;
     }
-
-    // 明确告诉 GLFW：窗口的图形上下文由 Vulkan 管理，而不是 OpenGL。
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-
-    // 让调用方决定窗口是否允许拖拽缩放。
-    glfwWindowHint(GLFW_RESIZABLE, isResizable ? GLFW_TRUE : GLFW_FALSE);
-
-    // 记录主显示器，后续全屏模式会用到。
+    glfwWindowHint(GLFW_RESIZABLE, isResizable);
     pMonitor = glfwGetPrimaryMonitor();
-
-    // 查询当前显示器的视频模式。
     const GLFWvidmode* pMode = glfwGetVideoMode(pMonitor);
-
-    // 根据 fullScreen 参数决定创建普通窗口还是全屏窗口。
     pWindow = fullScreen
-                  ? glfwCreateWindow(pMode->width, pMode->height, windowTitle, pMonitor, nullptr)
-                  : glfwCreateWindow(static_cast<int>(size.width), static_cast<int>(size.height), windowTitle, nullptr, nullptr);
-
-    // 如果窗口创建失败，就清理 GLFW 并返回失败。
+                  ? glfwCreateWindow(size.width, size.height, windowTitle, pMonitor, nullptr)
+                  : glfwCreateWindow(size.width, size.height, windowTitle, nullptr, nullptr);
     if (!pWindow)
     {
-        vulkan::outStream << "[ InitializeWindow ] ERROR\n";
-        vulkan::outStream << "Failed to create a GLFW window.\n";
+        std::cout << std::format("[ InitializeWindow ]\nFailed to create a glfw window!\n");
         glfwTerminate();
         return false;
     }
 
-    // 到这里说明窗口已经创建成功。
+    //本节新增--------------------------------
+#ifdef _WIN32
+    graphicsBase::Base().AddInstanceExtension(VK_KHR_SURFACE_EXTENSION_NAME);
+    graphicsBase::Base().AddInstanceExtension(VK_KHR_WIN32_SURFACE_EXTENSION_NAME);
+#else
+    uint32_t extensionCount = 0;
+    const char** extensionNames;
+    extensionNames = glfwGetRequiredInstanceExtensions(&extensionCount);
+    if (!extensionNames) {
+        std::cout << std::format("[ InitializeWindow ]\nVulkan is not available on this machine!\n");
+        glfwTerminate();
+        return false;
+    }
+    for (size_t i = 0; i < extensionCount; i++)
+        graphicsBase::Base().AddInstanceExtension(extensionNames[i]);
+#endif
+    graphicsBase::Base().AddDeviceExtension(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
+    //在创建window surface前创建Vulkan实例
+    graphicsBase::Base().UseLatestApiVersion();
+    if (graphicsBase::Base().CreateInstance())
+        return false;
+
+    //创建window surface
+    VkSurfaceKHR surface = VK_NULL_HANDLE;
+    if (VkResult result = glfwCreateWindowSurface(graphicsBase::Base().Instance(), pWindow, nullptr, &surface))
+    {
+        std::cout << std::format("[ InitializeWindow ] ERROR\nFailed to create a window surface!\nError code: {}\n", int32_t(result));
+        glfwTerminate();
+        return false;
+    }
+    graphicsBase::Base().Surface(surface);
+
+    //通过用||操作符短路执行来省去几行
+    if ( //获取物理设备，并使用列表中的第一个物理设备，这里不考虑以下任意函数失败后更换物理设备的情况
+        graphicsBase::Base().GetPhysicalDevices() ||
+        //一个true一个false，暂时不需要计算用的队列
+        graphicsBase::Base().DeterminePhysicalDevice(0, true, false) ||
+        //创建逻辑设备
+        graphicsBase::Base().CreateDevice())
+        return false;
+    //----------------------------------------
+
     return true;
 }
 
 void TerminateWindow()
 {
-    // 当前阶段只需要释放 GLFW 即可。
+    // 如果逻辑设备已经创建，先等待 GPU 执行完成再退出。
+    graphicsBase::Base().WaitIdle();
     glfwTerminate();
+}
+
+void TitleFps()
+{
+    static double time0 = glfwGetTime();
+    static double time1;
+    static double dt;
+    static int dframe = -1;
+    static std::stringstream info;
+    time1 = glfwGetTime();
+    dframe++;
+    if ((dt = time1 - time0) >= 1)
+    {
+        info.precision(1);
+        info << windowTitle << "    " << std::fixed << dframe / dt << " FPS";
+        glfwSetWindowTitle(pWindow, info.str().c_str());
+        info.str(""); //别忘了在设置完窗口标题后清空所用的stringstream
+        time0 = time1;
+        dframe = 0;
+    }
 }
 
 void MakeWindowFullScreen()
 {
-    // 读取当前显示器模式，切回真正的全屏窗口。
     const GLFWvidmode* pMode = glfwGetVideoMode(pMonitor);
     glfwSetWindowMonitor(pWindow, pMonitor, 0, 0, pMode->width, pMode->height, pMode->refreshRate);
 }
 
 void MakeWindowWindowed(VkOffset2D position, VkExtent2D size)
 {
-    // 从全屏切回窗口模式时，位置和尺寸都由调用方决定。
     const GLFWvidmode* pMode = glfwGetVideoMode(pMonitor);
-    glfwSetWindowMonitor(
-        pWindow,
-        nullptr,
-        position.x,
-        position.y,
-        static_cast<int>(size.width),
-        static_cast<int>(size.height),
-        pMode->refreshRate);
-}
-
-void TitleFps()
-{
-    // 记录上一次统计 FPS 的时间点。
-    static double time0 = glfwGetTime();
-
-    // 记录当前时间点。
-    const double time1 = glfwGetTime();
-
-    // 统计间隔时长。
-    const double deltaTime = time1 - time0;
-
-    // 统计这一秒内累计的帧数。
-    static int frameCount = 0;
-    ++frameCount;
-
-    // 每满一秒更新一次窗口标题，避免频繁设置标题。
-    if (deltaTime >= 1.0)
-    {
-        // 用字符串流拼出最终标题文本。
-        std::stringstream titleStream;
-
-        // 保留一位小数，方便观察帧率变化。
-        titleStream.precision(1);
-
-        // 生成“标题 + FPS”的显示文本。
-        titleStream << windowTitle << "    " << std::fixed << frameCount / deltaTime << " FPS";
-
-        // 把结果真正写回窗口标题。
-        glfwSetWindowTitle(pWindow, titleStream.str().c_str());
-
-        // 更新时间基准，开始下一轮统计。
-        time0 = time1;
-
-        // 重置帧计数器。
-        frameCount = 0;
-    }
+    glfwSetWindowMonitor(pWindow, nullptr, position.x, position.y, size.width, size.height, pMode->refreshRate);
 }

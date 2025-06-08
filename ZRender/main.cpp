@@ -2,24 +2,18 @@
 
 int main()
 {
-    // 先创建一个 1280x720 的 GLFW 窗口。
+    // 先创建 GLFW 窗口，并在这一课中顺带完成 Vulkan 的实例与设备初始化。
     if (!InitializeWindow(vulkan::defaultWindowSize))
-    {
         return -1;
-    }
 
-    // 当用户没有关闭窗口时，就持续执行消息循环。
+    // 在真正开始渲染前，先保留一个空循环框架。
     while (!glfwWindowShouldClose(pWindow))
     {
-        // 处理系统消息，比如鼠标、键盘和窗口事件。
-        glfwPollEvents();
+        // 渲染流程会从后续章节开始逐步填充。
 
-        // 持续刷新标题栏中的 FPS 显示。
+        glfwPollEvents();
         TitleFps();
     }
-
-    // 退出前释放窗口系统资源。
     TerminateWindow();
-
     return 0;
 }
