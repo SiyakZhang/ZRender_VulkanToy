@@ -4,21 +4,16 @@
 #include <GLFW/glfw3.h>
 #pragma comment(lib, "glfw3.lib") //链接编译所需的静态库
 
-// 窗口指针会在成功创建窗口后指向 GLFW 窗口对象。
-inline GLFWwindow* pWindow = nullptr;
-
-// 显示器指针会在切换全屏时复用。
-inline GLFWmonitor* pMonitor = nullptr;
-
-// 窗口标题在前期保持固定，后面会叠加 FPS。
-inline constexpr char windowTitle[] = "ZRender";
+//窗口的指针，全局变量自动初始化为NULL
+inline GLFWwindow* pWindow;
+//显示器信息的指针
+inline GLFWmonitor* pMonitor;
+//窗口标题
+inline auto windowTitle = "ZRender";
 
 bool InitializeWindow(VkExtent2D size, bool fullScreen = false, bool isResizable = true, bool limitFrameRate = true)
 {
     using namespace vulkan;
-
-    // 当前章节还不会创建交换链，所以这个参数先保留给下一课使用。
-    (void)limitFrameRate;
 
     if (!glfwInit())
     {
@@ -39,7 +34,6 @@ bool InitializeWindow(VkExtent2D size, bool fullScreen = false, bool isResizable
         return false;
     }
 
-    //本节新增--------------------------------
 #ifdef _WIN32
     graphicsBase::Base().AddInstanceExtension(VK_KHR_SURFACE_EXTENSION_NAME);
     graphicsBase::Base().AddInstanceExtension(VK_KHR_WIN32_SURFACE_EXTENSION_NAME);
@@ -79,15 +73,14 @@ bool InitializeWindow(VkExtent2D size, bool fullScreen = false, bool isResizable
         //创建逻辑设备
         graphicsBase::Base().CreateDevice())
         return false;
-    //----------------------------------------
-
+    if (graphicsBase::Base().CreateSwapchain(limitFrameRate))
+        return false;
     return true;
 }
 
 void TerminateWindow()
 {
-    // 如果逻辑设备已经创建，先等待 GPU 执行完成再退出。
-    graphicsBase::Base().WaitIdle();
+    vulkan::graphicsBase::Base().WaitIdle();
     glfwTerminate();
 }
 

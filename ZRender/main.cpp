@@ -2,7 +2,7 @@
 
 int main()
 {
-    // 先创建 GLFW 窗口，并在这一课中顺带完成 Vulkan 的实例与设备初始化。
+    // 先创建 GLFW 窗口，并在这一课中顺带完成实例、设备与交换链初始化。
     if (!InitializeWindow(vulkan::defaultWindowSize))
         return -1;
 
