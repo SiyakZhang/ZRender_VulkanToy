@@ -143,6 +143,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="GlfwGeneral.hpp" />
+    <ClInclude Include="RPFB_Screen.hpp" />
     <ClInclude Include="VKBase.h" />
     <ClInclude Include="VKHead.h" />
   </ItemGroup>
