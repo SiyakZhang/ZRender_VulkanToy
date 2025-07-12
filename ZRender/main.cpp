@@ -1,7 +1,98 @@
 #include "GlfwGeneral.hpp"
 #include "RPFB_Screen.hpp"
+#include "VulkanGraphicsPipelineBuilder.h"
 
 using namespace vulkan;
+
+// 三角形示例使用的管线布局。
+pipelineLayout pipelineLayout_triangle;
+
+// 三角形示例使用的图形管线。
+pipeline pipeline_triangle;
+
+const easyVulkan::renderPassWithFramebuffers& RenderPassAndFramebuffers()
+{
+    // 用一个静态引用统一拿到屏幕渲染通道与帧缓冲集合。
+    static const auto& rpwf = easyVulkan::CreateRpwf_Screen();
+    return rpwf;
+}
+
+void CreateLayout()
+{
+    // 本节还没有描述符和 push constant，所以空布局就够了。
+    VkPipelineLayoutCreateInfo pipelineLayoutCreateInfo{};
+    pipelineLayout_triangle.Create(pipelineLayoutCreateInfo);
+}
+
+void CreatePipeline()
+{
+    // 顶点着色器负责直接生成三角形三个顶点。
+    static shaderModule vert("shader/FirstTriangle.vert.spv");
+
+    // 片段着色器负责给三角形输出颜色。
+    static shaderModule frag("shader/FirstTriangle.frag.spv");
+
+    // 把两个着色器阶段打包成管线创建时需要的数组。
+    static VkPipelineShaderStageCreateInfo shaderStageCreateInfos_triangle[2] = {
+        vert.StageCreateInfo(VK_SHADER_STAGE_VERTEX_BIT),
+        frag.StageCreateInfo(VK_SHADER_STAGE_FRAGMENT_BIT)};
+
+    auto Create = [] {
+        // 先创建一个“图形管线创建信息包”，里面把常见状态都整理好了。
+        graphicsPipelineCreateInfoPack pipelineCiPack;
+
+        // 当前管线使用上面创建的空布局。
+        pipelineCiPack.createInfo.layout = pipelineLayout_triangle;
+
+        // 当前管线要在屏幕渲染通道里执行。
+        pipelineCiPack.createInfo.renderPass = RenderPassAndFramebuffers().renderPass;
+
+        // 三个顶点按三角形列表解释。
+        pipelineCiPack.inputAssemblyStateCi.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+        // 视口直接覆盖整个交换链图像范围。
+        pipelineCiPack.viewports.emplace_back(
+            0.0f,
+            0.0f,
+            static_cast<float>(windowSize.width),
+            static_cast<float>(windowSize.height),
+            0.0f,
+            1.0f);
+
+        // 裁剪矩形同样覆盖整个窗口。
+        pipelineCiPack.scissors.emplace_back(VkOffset2D{}, windowSize);
+
+        // 当前示例不开启多重采样。
+        pipelineCiPack.multisampleStateCi.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+        // 颜色附件把 RGBA 四个分量都写出去。
+        pipelineCiPack.colorBlendAttachmentStates.push_back({.colorWriteMask = 0b1111});
+
+        // 把各 vector 里的状态数量和地址同步回原生 Vulkan 结构体。
+        pipelineCiPack.UpdateAllArrays();
+
+        // 当前管线只包含顶点和片段两个阶段。
+        pipelineCiPack.createInfo.stageCount = 2;
+        pipelineCiPack.createInfo.pStages = shaderStageCreateInfos_triangle;
+
+        // 真正创建 Vulkan 图形管线。
+        pipeline_triangle.Create(pipelineCiPack);
+    };
+
+    auto Destroy = [] {
+        // 交换链重建前先主动析构旧管线，避免继续引用旧视口和旧渲染目标。
+        pipeline_triangle.~pipeline();
+    };
+
+    // 交换链重建后需要重新创建依赖交换链尺寸的图形管线。
+    graphicsBase::Base().AddCallback_CreateSwapchain(Create);
+
+    // 交换链销毁前要先销毁旧图形管线。
+    graphicsBase::Base().AddCallback_DestroySwapchain(Destroy);
+
+    // 首次启动时先创建一次。
+    Create();
+}
 
 int main()
 {
@@ -9,11 +100,17 @@ int main()
     if (!InitializeWindow(defaultWindowSize))
         return -1;
 
+    // 拿到屏幕渲染通道和与交换链图像配套的帧缓冲。
+    const auto& [renderPass, framebuffers] = RenderPassAndFramebuffers();
+
+    // 创建管线布局。
+    CreateLayout();
+
+    // 创建三角形图形管线。
+    CreatePipeline();
+
     // 先创建一个“初始为已完成状态”的栅栏，保证第一帧不用卡在等待上。
     fence fence(VK_FENCE_CREATE_SIGNALED_BIT);
-
-    // 取出屏幕渲染通道和与交换链图像配套的帧缓冲。
-    const auto& [renderPass, framebuffers] = easyVulkan::CreateRpwf_Screen();
 
     // 获取交换链图像成功后，呈现引擎会置位这个信号量。
     semaphore semaphore_imageIsAvailable;
@@ -21,7 +118,7 @@ int main()
     // 图形队列执行完命令缓冲区后，会置位这个信号量。
     semaphore semaphore_renderingIsOver;
 
-    // 本节先只使用一个主命令缓冲区。
+    // 本节仍然只使用一个主命令缓冲区。
     commandBuffer commandBuffer;
 
     // 命令池从图形队列族分配命令缓冲区，并允许逐帧重录。
@@ -32,10 +129,9 @@ int main()
     // 真正向命令池申请一个命令缓冲区对象。
     commandPool.AllocateBuffers(commandBuffer);
 
-    // 先把清屏颜色写死成红色，便于确认渲染通道已经真的工作。
-    VkClearValue clearColor = {.color = {1.f, 0.f, 0.f, 1.f}};
+    // 清屏颜色继续保留为红色，这样三角形会画在醒目的背景上。
+    VkClearValue clearColor = {.color = {1.0f, 0.0f, 0.0f, 1.0f}};
 
-    // 到这里为止，渲染循环需要的最小同步与命令对象已经备齐。
     while (!glfwWindowShouldClose(pWindow))
     {
         // 如果窗口被最小化，就先阻塞等待窗口恢复，避免无意义地继续渲染。
@@ -57,7 +153,11 @@ int main()
         // 进入渲染通道，并把当前帧缓冲清成红色。
         renderPass.CmdBegin(commandBuffer, framebuffers[i], {{}, windowSize}, clearColor);
 
-        // 这一课先只把清屏通路跑通，真正的绘制命令留到下一课补充。
+        // 绑定本节创建好的图形管线。
+        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_triangle);
+
+        // 直接画 3 个顶点，组成一个最简单的三角形。
+        vkCmdDraw(commandBuffer, 3, 1, 0, 0);
 
         // 结束当前渲染通道。
         renderPass.CmdEnd(commandBuffer);
