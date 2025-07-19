@@ -1333,6 +1333,135 @@ namespace vulkan
         }
     };
 
+    class event
+    {
+        // event 用于表示一个可被 CPU 或 GPU 读写的同步点。
+        VkEvent handle = VK_NULL_HANDLE;
+
+    public:
+        // 允许直接从完整创建信息构造。
+        event(VkEventCreateInfo& createInfo)
+        {
+            Create(createInfo);
+        }
+
+        // 也允许只给 flags，其他字段在内部补齐。
+        event(VkEventCreateFlags flags = 0)
+        {
+            Create(flags);
+        }
+
+        // 支持移动构造，避免重复销毁同一个 Vulkan handle。
+        event(event& other) noexcept
+        {
+            MoveHandle;
+        }
+
+        // 析构时自动释放底层 event 对象。
+        ~event()
+        {
+            DestroyHandleBy(vkDestroyEvent);
+        }
+
+        //Getter
+        DefineHandleTypeOperator;
+        DefineAddressFunction;
+        //Const Function
+        void CmdSet(VkCommandBuffer commandBuffer, VkPipelineStageFlags stage_from) const
+        {
+            // 在命令缓冲区里把 event 置为已触发状态。
+            vkCmdSetEvent(commandBuffer, handle, stage_from);
+        }
+
+        void CmdReset(VkCommandBuffer commandBuffer, VkPipelineStageFlags stage_from) const
+        {
+            // 在命令缓冲区里把 event 重置为未触发状态。
+            vkCmdResetEvent(commandBuffer, handle, stage_from);
+        }
+
+        void CmdWait(
+            VkCommandBuffer commandBuffer,
+            VkPipelineStageFlags stage_from,
+            VkPipelineStageFlags stage_to,
+            arrayRef<VkMemoryBarrier> memoryBarriers,
+            arrayRef<VkBufferMemoryBarrier> bufferMemoryBarriers,
+            arrayRef<VkImageMemoryBarrier> imageMemoryBarriers) const
+        {
+            // Vulkan 要求这些 barrier 结构体带上各自正确的 sType。
+            for (auto& i : memoryBarriers)
+                i.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+
+            // buffer barrier 也同理。
+            for (auto& i : bufferMemoryBarriers)
+                i.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+
+            // image barrier 也同理。
+            for (auto& i : imageMemoryBarriers)
+                i.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+
+            // 等 event 被触发后，再执行从 stage_from 到 stage_to 的同步。
+            vkCmdWaitEvents(
+                commandBuffer,
+                1,
+                &handle,
+                stage_from,
+                stage_to,
+                memoryBarriers.Count(),
+                memoryBarriers.Pointer(),
+                bufferMemoryBarriers.Count(),
+                bufferMemoryBarriers.Pointer(),
+                imageMemoryBarriers.Count(),
+                imageMemoryBarriers.Pointer());
+        }
+
+        result_t Set() const
+        {
+            // CPU 侧主动把 event 置为已触发状态。
+            VkResult result = vkSetEvent(graphicsBase::Base().Device(), handle);
+            if (result)
+                outStream << std::format("[ event ] ERROR\nFailed to signal the event!\nError code: {}\n", int32_t(result));
+            return result;
+        }
+
+        result_t Reset() const
+        {
+            // CPU 侧主动把 event 重置为未触发状态。
+            VkResult result = vkResetEvent(graphicsBase::Base().Device(), handle);
+            if (result)
+                outStream << std::format("[ event ] ERROR\nFailed to unsignal the event!\nError code: {}\n", int32_t(result));
+            return result;
+        }
+
+        result_t Status() const
+        {
+            // 查询当前 event 是否已经被触发。
+            VkResult result = vkGetEventStatus(graphicsBase::Base().Device(), handle);
+            if (result < 0)
+                outStream << std::format("[ event ] ERROR\nFailed to get the status of the event!\nError code: {}\n", int32_t(result));
+            return result;
+        }
+
+        //Non-const Function
+        result_t Create(VkEventCreateInfo& createInfo)
+        {
+            // 补齐结构体类型后创建 Vulkan event。
+            createInfo.sType = VK_STRUCTURE_TYPE_EVENT_CREATE_INFO;
+            VkResult result = vkCreateEvent(graphicsBase::Base().Device(), &createInfo, nullptr, &handle);
+            if (result)
+                outStream << std::format("[ event ] ERROR\nFailed to create an event!\nError code: {}\n", int32_t(result));
+            return result;
+        }
+
+        result_t Create(VkEventCreateFlags flags = 0)
+        {
+            // flags 版只是更方便的轻量入口。
+            VkEventCreateInfo createInfo = {
+                .flags = flags
+            };
+            return Create(createInfo);
+        }
+    };
+
     class shaderModule
     {
         VkShaderModule handle = VK_NULL_HANDLE;
