@@ -1462,6 +1462,652 @@ namespace vulkan
         }
     };
 
+    class deviceMemory
+    {
+        // 保存分配出来的 VkDeviceMemory 句柄。
+        VkDeviceMemory handle = VK_NULL_HANDLE;
+
+        // 记录这块内存的总分配字节数。
+        VkDeviceSize allocationSize = 0;
+
+        // 记录这块内存具备哪些属性位，后续映射时要用。
+        VkMemoryPropertyFlags memoryProperties = 0;
+
+        VkDeviceSize AdjustNonCoherentMemoryRange(VkDeviceSize& size, VkDeviceSize& offset) const
+        {
+            // 非 coherent 内存需要按 nonCoherentAtomSize 对齐刷新范围。
+            const VkDeviceSize& nonCoherentAtomSize =
+                graphicsBase::Base().PhysicalDeviceProperties().limits.nonCoherentAtomSize;
+
+            // 先记住调用方原本想访问的 offset。
+            const VkDeviceSize originalOffset = offset;
+
+            // 向下对齐 offset。
+            offset = offset / nonCoherentAtomSize * nonCoherentAtomSize;
+
+            // 向上扩展 size，保证覆盖原始访问范围。
+            size = std::min(
+                       (size + originalOffset + nonCoherentAtomSize - 1) / nonCoherentAtomSize * nonCoherentAtomSize,
+                       allocationSize) -
+                   offset;
+
+            // 返回“原始偏移相对新 offset 的位移量”，映射后要把指针挪回去。
+            return originalOffset - offset;
+        }
+
+    protected:
+        class
+        {
+            friend class bufferMemory;
+            friend class imageMemory;
+
+            bool value = false;
+
+            operator bool() const
+            {
+                return value;
+            }
+
+            auto& operator=(bool value)
+            {
+                this->value = value;
+                return *this;
+            }
+        } areBound;
+
+    public:
+        deviceMemory() = default;
+
+        deviceMemory(VkMemoryAllocateInfo& allocateInfo)
+        {
+            Allocate(allocateInfo);
+        }
+
+        deviceMemory(deviceMemory&& other) noexcept
+        {
+            MoveHandle;
+            allocationSize = other.allocationSize;
+            memoryProperties = other.memoryProperties;
+            other.allocationSize = 0;
+            other.memoryProperties = 0;
+        }
+
+        ~deviceMemory()
+        {
+            DestroyHandleBy(vkFreeMemory);
+            allocationSize = 0;
+            memoryProperties = 0;
+        }
+
+        //Getter
+        DefineHandleTypeOperator;
+        DefineAddressFunction;
+
+        VkDeviceSize AllocationSize() const
+        {
+            return allocationSize;
+        }
+
+        VkMemoryPropertyFlags MemoryProperties() const
+        {
+            return memoryProperties;
+        }
+
+        //Const Function
+        result_t MapMemory(void*& pData, VkDeviceSize size, VkDeviceSize offset = 0) const
+        {
+            // 非 coherent 内存映射前后需要做额外范围调整。
+            VkDeviceSize inverseDeltaOffset = 0;
+
+            if (!(memoryProperties & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT))
+                inverseDeltaOffset = AdjustNonCoherentMemoryRange(size, offset);
+
+            // 真正映射内存到 CPU 地址空间。
+            if (VkResult result = vkMapMemory(graphicsBase::Base().Device(), handle, offset, size, 0, &pData))
+            {
+                outStream << std::format("[ deviceMemory ] ERROR\nFailed to map the memory!\nError code: {}\n", int32_t(result));
+                return result;
+            }
+
+            // 非 coherent 内存读取前需要先 invalidate。
+            if (!(memoryProperties & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT))
+            {
+                pData = static_cast<uint8_t*>(pData) + inverseDeltaOffset;
+                VkMappedMemoryRange mappedMemoryRange = {
+                    .sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE,
+                    .memory = handle,
+                    .offset = offset,
+                    .size = size};
+
+                if (VkResult result = vkInvalidateMappedMemoryRanges(graphicsBase::Base().Device(), 1, &mappedMemoryRange))
+                {
+                    outStream << std::format("[ deviceMemory ] ERROR\nFailed to invalidate the memory!\nError code: {}\n", int32_t(result));
+                    return result;
+                }
+            }
+
+            return VK_SUCCESS;
+        }
+
+        result_t UnmapMemory(VkDeviceSize size, VkDeviceSize offset = 0) const
+        {
+            // 非 coherent 内存在取消映射前要先 flush 回设备侧。
+            if (!(memoryProperties & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT))
+            {
+                AdjustNonCoherentMemoryRange(size, offset);
+                VkMappedMemoryRange mappedMemoryRange = {
+                    .sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE,
+                    .memory = handle,
+                    .offset = offset,
+                    .size = size};
+
+                if (VkResult result = vkFlushMappedMemoryRanges(graphicsBase::Base().Device(), 1, &mappedMemoryRange))
+                {
+                    outStream << std::format("[ deviceMemory ] ERROR\nFailed to flush the memory!\nError code: {}\n", int32_t(result));
+                    return result;
+                }
+            }
+
+            vkUnmapMemory(graphicsBase::Base().Device(), handle);
+            return VK_SUCCESS;
+        }
+
+        result_t BufferData(const void* pData_src, VkDeviceSize size, VkDeviceSize offset = 0) const
+        {
+            // 把 CPU 数据直接写进这块可映射内存。
+            void* pData_dst = nullptr;
+            if (VkResult result = MapMemory(pData_dst, size, offset))
+                return result;
+            memcpy(pData_dst, pData_src, static_cast<size_t>(size));
+            return UnmapMemory(size, offset);
+        }
+
+        result_t BufferData(const auto& data_src) const
+        {
+            return BufferData(&data_src, sizeof data_src);
+        }
+
+        result_t RetrieveData(void* pData_dst, VkDeviceSize size, VkDeviceSize offset = 0) const
+        {
+            // 把设备内存中的内容拷回 CPU 端缓存。
+            void* pData_src = nullptr;
+            if (VkResult result = MapMemory(pData_src, size, offset))
+                return result;
+            memcpy(pData_dst, pData_src, static_cast<size_t>(size));
+            return UnmapMemory(size, offset);
+        }
+
+        //Non-const Function
+        result_t Allocate(VkMemoryAllocateInfo& allocateInfo)
+        {
+            // 先检查内存类型索引是否有效。
+            if (allocateInfo.memoryTypeIndex >= graphicsBase::Base().PhysicalDeviceMemoryProperties().memoryTypeCount)
+            {
+                outStream << std::format("[ deviceMemory ] ERROR\nInvalid memory type index!\n");
+                return VK_RESULT_MAX_ENUM;
+            }
+
+            // Vulkan 要求 sType 正确。
+            allocateInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+
+            // 真正申请这块设备内存。
+            if (VkResult result = vkAllocateMemory(graphicsBase::Base().Device(), &allocateInfo, nullptr, &handle))
+            {
+                outStream << std::format("[ deviceMemory ] ERROR\nFailed to allocate memory!\nError code: {}\n", int32_t(result));
+                return result;
+            }
+
+            allocationSize = allocateInfo.allocationSize;
+            memoryProperties =
+                graphicsBase::Base().PhysicalDeviceMemoryProperties().memoryTypes[allocateInfo.memoryTypeIndex].propertyFlags;
+            return VK_SUCCESS;
+        }
+    };
+
+    class buffer
+    {
+        // 这是裸 VkBuffer 句柄的轻量封装。
+        VkBuffer handle = VK_NULL_HANDLE;
+
+    public:
+        buffer() = default;
+
+        buffer(VkBufferCreateInfo& createInfo)
+        {
+            Create(createInfo);
+        }
+
+        buffer(buffer&& other) noexcept
+        {
+            MoveHandle;
+        }
+
+        ~buffer()
+        {
+            DestroyHandleBy(vkDestroyBuffer);
+        }
+
+        //Getter
+        DefineHandleTypeOperator;
+        DefineAddressFunction;
+
+        //Const Function
+        VkMemoryAllocateInfo MemoryAllocateInfo(VkMemoryPropertyFlags desiredMemoryProperties) const
+        {
+            // 先取出这块 buffer 的内存需求。
+            VkMemoryAllocateInfo memoryAllocateInfo = {
+                .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+            VkMemoryRequirements memoryRequirements;
+            vkGetBufferMemoryRequirements(graphicsBase::Base().Device(), handle, &memoryRequirements);
+
+            // 写入本次至少需要分配多少字节。
+            memoryAllocateInfo.allocationSize = memoryRequirements.size;
+            memoryAllocateInfo.memoryTypeIndex = UINT32_MAX;
+
+            // 从物理设备支持的内存类型里挑一个满足属性要求的索引。
+            auto& physicalDeviceMemoryProperties = graphicsBase::Base().PhysicalDeviceMemoryProperties();
+            for (uint32_t i = 0; i < physicalDeviceMemoryProperties.memoryTypeCount; ++i)
+                if (memoryRequirements.memoryTypeBits & 1 << i &&
+                    (physicalDeviceMemoryProperties.memoryTypes[i].propertyFlags & desiredMemoryProperties) == desiredMemoryProperties)
+                {
+                    memoryAllocateInfo.memoryTypeIndex = i;
+                    break;
+                }
+
+            return memoryAllocateInfo;
+        }
+
+        result_t BindMemory(VkDeviceMemory deviceMemory, VkDeviceSize memoryOffset = 0) const
+        {
+            // 把已经分配好的 VkDeviceMemory 绑定到这个 buffer 上。
+            VkResult result = vkBindBufferMemory(graphicsBase::Base().Device(), handle, deviceMemory, memoryOffset);
+            if (result)
+                outStream << std::format("[ buffer ] ERROR\nFailed to attach the memory!\nError code: {}\n", int32_t(result));
+            return result;
+        }
+
+        //Non-const Function
+        result_t Create(VkBufferCreateInfo& createInfo)
+        {
+            // 补齐 sType 后创建原生 buffer。
+            createInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+            VkResult result = vkCreateBuffer(graphicsBase::Base().Device(), &createInfo, nullptr, &handle);
+            if (result)
+                outStream << std::format("[ buffer ] ERROR\nFailed to create a buffer!\nError code: {}\n", int32_t(result));
+            return result;
+        }
+    };
+
+    class bufferMemory : buffer, deviceMemory
+    {
+    public:
+        bufferMemory() = default;
+
+        bufferMemory(VkBufferCreateInfo& createInfo, VkMemoryPropertyFlags desiredMemoryProperties)
+        {
+            Create(createInfo, desiredMemoryProperties);
+        }
+
+        bufferMemory(bufferMemory&& other) noexcept : buffer(std::move(other)), deviceMemory(std::move(other))
+        {
+            areBound = other.areBound;
+            other.areBound = false;
+        }
+
+        ~bufferMemory()
+        {
+            areBound = false;
+        }
+
+        //Getter
+        VkBuffer Buffer() const
+        {
+            return static_cast<const buffer&>(*this);
+        }
+
+        const VkBuffer* AddressOfBuffer() const
+        {
+            return buffer::Address();
+        }
+
+        VkDeviceMemory Memory() const
+        {
+            return static_cast<const deviceMemory&>(*this);
+        }
+
+        const VkDeviceMemory* AddressOfMemory() const
+        {
+            return deviceMemory::Address();
+        }
+
+        bool AreBound() const
+        {
+            return areBound;
+        }
+
+        using deviceMemory::AllocationSize;
+        using deviceMemory::MemoryProperties;
+
+        //Const Function
+        using deviceMemory::BufferData;
+        using deviceMemory::MapMemory;
+        using deviceMemory::RetrieveData;
+        using deviceMemory::UnmapMemory;
+
+        //Non-const Function
+        result_t CreateBuffer(VkBufferCreateInfo& createInfo)
+        {
+            return buffer::Create(createInfo);
+        }
+
+        result_t AllocateMemory(VkMemoryPropertyFlags desiredMemoryProperties)
+        {
+            // 根据 buffer 的内存需求申请一块匹配的设备内存。
+            VkMemoryAllocateInfo allocateInfo = MemoryAllocateInfo(desiredMemoryProperties);
+            if (allocateInfo.memoryTypeIndex >= graphicsBase::Base().PhysicalDeviceMemoryProperties().memoryTypeCount)
+                return VK_RESULT_MAX_ENUM;
+            return Allocate(allocateInfo);
+        }
+
+        result_t BindMemory()
+        {
+            // 把自己内部持有的内存句柄绑定给自己内部的 buffer 句柄。
+            if (VkResult result = buffer::BindMemory(Memory()))
+                return result;
+            areBound = true;
+            return VK_SUCCESS;
+        }
+
+        result_t Create(VkBufferCreateInfo& createInfo, VkMemoryPropertyFlags desiredMemoryProperties)
+        {
+            // 按“建 buffer -> 分配内存 -> 绑定内存”的顺序完成整个对象创建。
+            VkResult result;
+            false || (result = CreateBuffer(createInfo)) || (result = AllocateMemory(desiredMemoryProperties)) ||
+                (result = BindMemory());
+            return result;
+        }
+    };
+
+    class image
+    {
+        // 这是裸 VkImage 句柄的轻量封装。
+        VkImage handle = VK_NULL_HANDLE;
+
+    public:
+        image() = default;
+
+        image(VkImageCreateInfo& createInfo)
+        {
+            Create(createInfo);
+        }
+
+        image(image&& other) noexcept
+        {
+            MoveHandle;
+        }
+
+        ~image()
+        {
+            DestroyHandleBy(vkDestroyImage);
+        }
+
+        //Getter
+        DefineHandleTypeOperator;
+        DefineAddressFunction;
+
+        //Const Function
+        VkMemoryAllocateInfo MemoryAllocateInfo(VkMemoryPropertyFlags desiredMemoryProperties) const
+        {
+            // 先取出图像的内存需求。
+            VkMemoryAllocateInfo memoryAllocateInfo = {
+                .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+            VkMemoryRequirements memoryRequirements;
+            vkGetImageMemoryRequirements(graphicsBase::Base().Device(), handle, &memoryRequirements);
+            memoryAllocateInfo.allocationSize = memoryRequirements.size;
+
+            // 封成小 lambda，避免重复写内存类型筛选逻辑。
+            auto GetMemoryTypeIndex = [](uint32_t memoryTypeBits, VkMemoryPropertyFlags desiredMemoryProperties) {
+                auto& physicalDeviceMemoryProperties = graphicsBase::Base().PhysicalDeviceMemoryProperties();
+                for (uint32_t i = 0; i < physicalDeviceMemoryProperties.memoryTypeCount; ++i)
+                    if (memoryTypeBits & 1 << i &&
+                        (physicalDeviceMemoryProperties.memoryTypes[i].propertyFlags & desiredMemoryProperties) == desiredMemoryProperties)
+                        return i;
+                return UINT32_MAX;
+            };
+
+            memoryAllocateInfo.memoryTypeIndex = GetMemoryTypeIndex(memoryRequirements.memoryTypeBits, desiredMemoryProperties);
+
+            // 若懒分配内存类型找不到，则退一步尝试去掉该属性位。
+            if (memoryAllocateInfo.memoryTypeIndex == UINT32_MAX &&
+                desiredMemoryProperties & VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT)
+                memoryAllocateInfo.memoryTypeIndex =
+                    GetMemoryTypeIndex(memoryRequirements.memoryTypeBits, desiredMemoryProperties & ~VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT);
+
+            return memoryAllocateInfo;
+        }
+
+        result_t BindMemory(VkDeviceMemory deviceMemory, VkDeviceSize memoryOffset = 0) const
+        {
+            // 把已经分配好的 VkDeviceMemory 绑定到这个 image 上。
+            VkResult result = vkBindImageMemory(graphicsBase::Base().Device(), handle, deviceMemory, memoryOffset);
+            if (result)
+                outStream << std::format("[ image ] ERROR\nFailed to attach the memory!\nError code: {}\n", int32_t(result));
+            return result;
+        }
+
+        //Non-const Function
+        result_t Create(VkImageCreateInfo& createInfo)
+        {
+            // 补齐 sType 后创建原生 image。
+            createInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+            VkResult result = vkCreateImage(graphicsBase::Base().Device(), &createInfo, nullptr, &handle);
+            if (result)
+                outStream << std::format("[ image ] ERROR\nFailed to create an image!\nError code: {}\n", int32_t(result));
+            return result;
+        }
+    };
+
+    class imageMemory : image, deviceMemory
+    {
+    public:
+        imageMemory() = default;
+
+        imageMemory(VkImageCreateInfo& createInfo, VkMemoryPropertyFlags desiredMemoryProperties)
+        {
+            Create(createInfo, desiredMemoryProperties);
+        }
+
+        imageMemory(imageMemory&& other) noexcept : image(std::move(other)), deviceMemory(std::move(other))
+        {
+            areBound = other.areBound;
+            other.areBound = false;
+        }
+
+        ~imageMemory()
+        {
+            areBound = false;
+        }
+
+        //Getter
+        VkImage Image() const
+        {
+            return static_cast<const image&>(*this);
+        }
+
+        const VkImage* AddressOfImage() const
+        {
+            return image::Address();
+        }
+
+        VkDeviceMemory Memory() const
+        {
+            return static_cast<const deviceMemory&>(*this);
+        }
+
+        const VkDeviceMemory* AddressOfMemory() const
+        {
+            return deviceMemory::Address();
+        }
+
+        bool AreBound() const
+        {
+            return areBound;
+        }
+
+        using deviceMemory::AllocationSize;
+        using deviceMemory::MemoryProperties;
+
+        //Non-const Function
+        result_t CreateImage(VkImageCreateInfo& createInfo)
+        {
+            return image::Create(createInfo);
+        }
+
+        result_t AllocateMemory(VkMemoryPropertyFlags desiredMemoryProperties)
+        {
+            // 根据图像内存需求申请一块匹配的设备内存。
+            VkMemoryAllocateInfo allocateInfo = MemoryAllocateInfo(desiredMemoryProperties);
+            if (allocateInfo.memoryTypeIndex >= graphicsBase::Base().PhysicalDeviceMemoryProperties().memoryTypeCount)
+                return VK_RESULT_MAX_ENUM;
+            return Allocate(allocateInfo);
+        }
+
+        result_t BindMemory()
+        {
+            // 把自己内部持有的内存句柄绑定给自己内部的 image 句柄。
+            if (VkResult result = image::BindMemory(Memory()))
+                return result;
+            areBound = true;
+            return VK_SUCCESS;
+        }
+
+        result_t Create(VkImageCreateInfo& createInfo, VkMemoryPropertyFlags desiredMemoryProperties)
+        {
+            // 按“建图像 -> 分配内存 -> 绑定内存”的顺序完成整个对象创建。
+            VkResult result;
+            false || (result = CreateImage(createInfo)) || (result = AllocateMemory(desiredMemoryProperties)) ||
+                (result = BindMemory());
+            return result;
+        }
+    };
+
+    class bufferView
+    {
+        // bufferView 主要用于 texel buffer 一类按格式解释 buffer 内容的场景。
+        VkBufferView handle = VK_NULL_HANDLE;
+
+    public:
+        bufferView() = default;
+
+        bufferView(VkBufferViewCreateInfo& createInfo)
+        {
+            Create(createInfo);
+        }
+
+        bufferView(VkBuffer buffer, VkFormat format, VkDeviceSize offset = 0, VkDeviceSize range = 0)
+        {
+            Create(buffer, format, offset, range);
+        }
+
+        bufferView(bufferView&& other) noexcept
+        {
+            MoveHandle;
+        }
+
+        ~bufferView()
+        {
+            DestroyHandleBy(vkDestroyBufferView);
+        }
+
+        //Getter
+        DefineHandleTypeOperator;
+        DefineAddressFunction;
+
+        //Non-const Function
+        result_t Create(VkBufferViewCreateInfo& createInfo)
+        {
+            createInfo.sType = VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO;
+            VkResult result = vkCreateBufferView(graphicsBase::Base().Device(), &createInfo, nullptr, &handle);
+            if (result)
+                outStream << std::format("[ bufferView ] ERROR\nFailed to create a buffer view!\nError code: {}\n", int32_t(result));
+            return result;
+        }
+
+        result_t Create(VkBuffer buffer, VkFormat format, VkDeviceSize offset = 0, VkDeviceSize range = 0)
+        {
+            VkBufferViewCreateInfo createInfo = {
+                .buffer = buffer,
+                .format = format,
+                .offset = offset,
+                .range = range};
+            return Create(createInfo);
+        }
+    };
+
+    class imageView
+    {
+        // imageView 决定“如何看待”一张图像的某个子资源范围。
+        VkImageView handle = VK_NULL_HANDLE;
+
+    public:
+        imageView() = default;
+
+        imageView(VkImageViewCreateInfo& createInfo)
+        {
+            Create(createInfo);
+        }
+
+        imageView(
+            VkImage image,
+            VkImageViewType viewType,
+            VkFormat format,
+            const VkImageSubresourceRange& subresourceRange,
+            VkImageViewCreateFlags flags = 0)
+        {
+            Create(image, viewType, format, subresourceRange, flags);
+        }
+
+        imageView(imageView&& other) noexcept
+        {
+            MoveHandle;
+        }
+
+        ~imageView()
+        {
+            DestroyHandleBy(vkDestroyImageView);
+        }
+
+        //Getter
+        DefineHandleTypeOperator;
+        DefineAddressFunction;
+
+        //Non-const Function
+        result_t Create(VkImageViewCreateInfo& createInfo)
+        {
+            createInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+            VkResult result = vkCreateImageView(graphicsBase::Base().Device(), &createInfo, nullptr, &handle);
+            if (result)
+                outStream << std::format("[ imageView ] ERROR\nFailed to create an image view!\nError code: {}\n", int32_t(result));
+            return result;
+        }
+
+        result_t Create(
+            VkImage image,
+            VkImageViewType viewType,
+            VkFormat format,
+            const VkImageSubresourceRange& subresourceRange,
+            VkImageViewCreateFlags flags = 0)
+        {
+            VkImageViewCreateInfo createInfo = {
+                .flags = flags,
+                .image = image,
+                .viewType = viewType,
+                .format = format,
+                .subresourceRange = subresourceRange};
+            return Create(createInfo);
+        }
+    };
+
     class shaderModule
     {
         VkShaderModule handle = VK_NULL_HANDLE;

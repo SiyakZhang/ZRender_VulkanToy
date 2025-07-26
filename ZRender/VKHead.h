@@ -1,8 +1,10 @@
 #pragma once
 
 // 标准库：这里集中放后续各章节都会反复用到的常用头文件。
+#include <algorithm>
 #include <chrono>
 #include <concepts>
+#include <cstring>
 #include <cstddef>
 #include <cstdint>
 #include <format>
