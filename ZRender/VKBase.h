@@ -2219,8 +2219,24 @@ namespace vulkan
         DefineHandleTypeOperator;
         DefineAddressFunction;
         //Non-const Function
+        result_t Create(
+            arrayRef<const VkDescriptorSetLayout> setLayouts = {},
+            arrayRef<const VkPushConstantRange> pushConstantRanges = {},
+            VkPipelineLayoutCreateFlags flags = 0)
+        {
+            // 这一章开始把“描述符集布局”和“push constant 范围”正式纳入管线布局描述。
+            VkPipelineLayoutCreateInfo createInfo = {
+                .flags = flags,
+                .setLayoutCount = uint32_t(setLayouts.Count()),
+                .pSetLayouts = setLayouts.Pointer(),
+                .pushConstantRangeCount = uint32_t(pushConstantRanges.Count()),
+                .pPushConstantRanges = pushConstantRanges.Pointer()};
+            return Create(createInfo);
+        }
+
         result_t Create(VkPipelineLayoutCreateInfo& createInfo)
         {
+            // 交给 Vulkan 前再统一补上正确的结构体类型，避免调用侧遗漏。
             createInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
             VkResult result = vkCreatePipelineLayout(graphicsBase::Base().Device(), &createInfo, nullptr, &handle);
             if (result)
@@ -2259,11 +2275,24 @@ namespace vulkan
         //Getter
         DefineHandleTypeOperator;
         DefineAddressFunction;
+        //Const Function
+        void CmdBind(VkCommandBuffer commandBuffer, VkPipelineBindPoint bindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS) const
+        {
+            // 图形管线与计算管线都通过同一个命令完成绑定，只是绑定点不同。
+            vkCmdBindPipeline(commandBuffer, bindPoint, handle);
+        }
+
         //Non-const Function
         result_t Create(VkGraphicsPipelineCreateInfo& createInfo)
         {
+            // 大多数教程示例暂时不使用 pipeline cache，所以默认走空缓存句柄。
+            return Create(VK_NULL_HANDLE, createInfo);
+        }
+
+        result_t Create(VkPipelineCache pipelineCache, VkGraphicsPipelineCreateInfo& createInfo)
+        {
             createInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-            VkResult result = vkCreateGraphicsPipelines(graphicsBase::Base().Device(), VK_NULL_HANDLE, 1, &createInfo, nullptr, &handle);
+            VkResult result = vkCreateGraphicsPipelines(graphicsBase::Base().Device(), pipelineCache, 1, &createInfo, nullptr, &handle);
             if (result)
                 outStream << std::format("[ pipeline ] ERROR\nFailed to create a graphics pipeline!\nError code: {}\n", int32_t(result));
             return result;
@@ -2271,8 +2300,14 @@ namespace vulkan
 
         result_t Create(VkComputePipelineCreateInfo& createInfo)
         {
+            // 计算管线同理，先保留一个最常用的空缓存重载。
+            return Create(VK_NULL_HANDLE, createInfo);
+        }
+
+        result_t Create(VkPipelineCache pipelineCache, VkComputePipelineCreateInfo& createInfo)
+        {
             createInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-            VkResult result = vkCreateComputePipelines(graphicsBase::Base().Device(), VK_NULL_HANDLE, 1, &createInfo, nullptr, &handle);
+            VkResult result = vkCreateComputePipelines(graphicsBase::Base().Device(), pipelineCache, 1, &createInfo, nullptr, &handle);
             if (result)
                 outStream << std::format("[ pipeline ] ERROR\nFailed to create a compute pipeline!\nError code: {}\n", int32_t(result));
             return result;

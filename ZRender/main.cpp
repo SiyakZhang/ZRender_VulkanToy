@@ -19,9 +19,8 @@ const easyVulkan::renderPassWithFramebuffers& RenderPassAndFramebuffers()
 
 void CreateLayout()
 {
-    // 本节还没有描述符和 push constant，所以空布局就够了。
-    VkPipelineLayoutCreateInfo pipelineLayoutCreateInfo{};
-    pipelineLayout_triangle.Create(pipelineLayoutCreateInfo);
+    // 本节还没有描述符和 push constant，所以直接创建一个“空管线布局”即可。
+    pipelineLayout_triangle.Create();
 }
 
 void CreatePipeline()
@@ -42,10 +41,10 @@ void CreatePipeline()
         graphicsPipelineCreateInfoPack pipelineCiPack;
 
         // 当前管线使用上面创建的空布局。
-        pipelineCiPack.createInfo.layout = pipelineLayout_triangle;
+        pipelineCiPack.SetPipelineLayout(pipelineLayout_triangle);
 
         // 当前管线要在屏幕渲染通道里执行。
-        pipelineCiPack.createInfo.renderPass = RenderPassAndFramebuffers().renderPass;
+        pipelineCiPack.SetRenderPass(RenderPassAndFramebuffers().renderPass);
 
         // 三个顶点按三角形列表解释。
         pipelineCiPack.inputAssemblyStateCi.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
@@ -72,8 +71,7 @@ void CreatePipeline()
         pipelineCiPack.UpdateAllArrays();
 
         // 当前管线只包含顶点和片段两个阶段。
-        pipelineCiPack.createInfo.stageCount = 2;
-        pipelineCiPack.createInfo.pStages = shaderStageCreateInfos_triangle;
+        pipelineCiPack.SetShaderStages(shaderStageCreateInfos_triangle);
 
         // 真正创建 Vulkan 图形管线。
         pipeline_triangle.Create(pipelineCiPack);
@@ -154,7 +152,7 @@ int main()
         renderPass.CmdBegin(commandBuffer, framebuffers[i], {{}, windowSize}, clearColor);
 
         // 绑定本节创建好的图形管线。
-        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_triangle);
+        pipeline_triangle.CmdBind(commandBuffer);
 
         // 直接画 3 个顶点，组成一个最简单的三角形。
         vkCmdDraw(commandBuffer, 3, 1, 0, 0);
