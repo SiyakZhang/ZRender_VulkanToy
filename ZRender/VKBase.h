@@ -2371,8 +2371,27 @@ namespace vulkan
         }
 
         //Non-const Function
+        result_t Create(
+            arrayRef<const VkAttachmentDescription> attachments,
+            arrayRef<const VkSubpassDescription> subpasses,
+            arrayRef<const VkSubpassDependency> dependencies = {},
+            VkRenderPassCreateFlags flags = 0)
+        {
+            // 渲染通道本质上就是“附件 + 子通道 + 子通道依赖”的组合描述。
+            VkRenderPassCreateInfo createInfo = {
+                .flags = flags,
+                .attachmentCount = uint32_t(attachments.Count()),
+                .pAttachments = attachments.Pointer(),
+                .subpassCount = uint32_t(subpasses.Count()),
+                .pSubpasses = subpasses.Pointer(),
+                .dependencyCount = uint32_t(dependencies.Count()),
+                .pDependencies = dependencies.Pointer()};
+            return Create(createInfo);
+        }
+
         result_t Create(VkRenderPassCreateInfo& createInfo)
         {
+            // 统一补齐结构体类型，调用侧就只需要关注真正的渲染流程参数。
             createInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
             VkResult result = vkCreateRenderPass(graphicsBase::Base().Device(), &createInfo, nullptr, &handle);
             if (result)
@@ -2407,8 +2426,28 @@ namespace vulkan
         DefineHandleTypeOperator;
         DefineAddressFunction;
         //Non-const Function
+        result_t Create(
+            VkRenderPass renderPass,
+            arrayRef<const VkImageView> attachments,
+            VkExtent2D extent,
+            uint32_t layers = 1,
+            VkFramebufferCreateFlags flags = 0)
+        {
+            // framebuffer 里的附件顺序必须与 render pass 中声明的附件顺序一一对应。
+            VkFramebufferCreateInfo createInfo = {
+                .flags = flags,
+                .renderPass = renderPass,
+                .attachmentCount = uint32_t(attachments.Count()),
+                .pAttachments = attachments.Pointer(),
+                .width = extent.width,
+                .height = extent.height,
+                .layers = layers};
+            return Create(createInfo);
+        }
+
         result_t Create(VkFramebufferCreateInfo& createInfo)
         {
+            // 这里继续沿用统一补 sType 的做法，保持封装风格一致。
             createInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
             VkResult result = vkCreateFramebuffer(graphicsBase::Base().Device(), &createInfo, nullptr, &handle);
             if (result)

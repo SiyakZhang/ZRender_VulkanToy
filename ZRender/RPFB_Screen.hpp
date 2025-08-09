@@ -23,64 +23,49 @@ namespace easyVulkan
         // 用静态对象缓存结果，避免重复创建同一组对象。
         static renderPassWithFramebuffers rpwf;
 
-        // 颜色附件直接使用交换链图像格式。
-        VkAttachmentDescription attachmentDescription = {
+        // 当前示例只有一个颜色附件，它直接写入交换链图像。
+        VkAttachmentDescription attachmentDescriptions[] = {{
             .format = graphicsBase::Base().SwapchainCreateInfo().imageFormat,
             .samples = VK_SAMPLE_COUNT_1_BIT,
             .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
             .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
             .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-            .finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR};
+            .finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR}};
 
         // 这个子通道只有一个颜色附件，附件索引就是 0。
         VkAttachmentReference attachmentReference = {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
 
-        // 渲染通道当前只包含一个图形子通道。
-        VkSubpassDescription subpassDescription = {
+        // 当前渲染通道也只有一个图形子通道。
+        VkSubpassDescription subpassDescriptions[] = {{
             .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
             .colorAttachmentCount = 1,
-            .pColorAttachments = &attachmentReference};
+            .pColorAttachments = &attachmentReference}};
 
         // 子通道依赖负责把外部状态过渡到颜色附件输出阶段。
-        VkSubpassDependency subpassDependency = {
+        VkSubpassDependency subpassDependencies[] = {{
             .srcSubpass = VK_SUBPASS_EXTERNAL,
             .dstSubpass = 0,
             .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
             .dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
             .srcAccessMask = 0,
             .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-            .dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT};
+            .dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT}};
 
-        // 把附件、子通道和依赖关系打包成渲染通道创建信息。
-        VkRenderPassCreateInfo renderPassCreateInfo = {
-            .attachmentCount = 1,
-            .pAttachments = &attachmentDescription,
-            .subpassCount = 1,
-            .pSubpasses = &subpassDescription,
-            .dependencyCount = 1,
-            .pDependencies = &subpassDependency};
-
-        // 真正创建渲染通道对象。
-        rpwf.renderPass.Create(renderPassCreateInfo);
+        // 直接把“附件数组 + 子通道数组 + 依赖数组”交给这一章补好的 renderPass 封装。
+        rpwf.renderPass.Create(attachmentDescriptions, subpassDescriptions, subpassDependencies);
 
         auto CreateFramebuffers = [] {
             // 每张交换链图像都需要一个对应的帧缓冲。
             rpwf.framebuffers.resize(graphicsBase::Base().SwapchainImageCount());
 
-            // 帧缓冲尺寸与交换链图像尺寸保持一致。
-            VkFramebufferCreateInfo framebufferCreateInfo = {
-                .renderPass = rpwf.renderPass,
-                .attachmentCount = 1,
-                .width = windowSize.width,
-                .height = windowSize.height,
-                .layers = 1};
-
-            // 为每一张交换链 image view 创建一个 framebuffer。
+            // 为每一张交换链 image view 创建一个 framebuffer，它们共享同一个 render pass 模板。
             for (size_t i = 0; i < graphicsBase::Base().SwapchainImageCount(); ++i)
             {
+                // 这一帧缓冲只挂一个颜色附件，也就是当前这张交换链 image view。
                 VkImageView attachment = graphicsBase::Base().SwapchainImageView(static_cast<uint32_t>(i));
-                framebufferCreateInfo.pAttachments = &attachment;
-                rpwf.framebuffers[i].Create(framebufferCreateInfo);
+
+                // 直接调用 framebuffer 的章节级辅助重载，让参数语义更直观。
+                rpwf.framebuffers[i].Create(rpwf.renderPass, attachment, windowSize);
             }
         };
 
