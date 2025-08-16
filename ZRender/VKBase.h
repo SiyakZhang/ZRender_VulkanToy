@@ -2475,6 +2475,7 @@ namespace vulkan
         //Const Function
         result_t Begin(VkCommandBufferUsageFlags usageFlags, VkCommandBufferInheritanceInfo& inheritanceInfo) const
         {
+            // 二级命令缓冲区开始录制时，需要补齐继承信息里的结构体类型。
             inheritanceInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO;
             VkCommandBufferBeginInfo beginInfo = {
                 .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
@@ -2485,6 +2486,12 @@ namespace vulkan
             if (result)
                 outStream << std::format("[ commandBuffer ] ERROR\nFailed to begin a command buffer!\nError code: {}\n", int32_t(result));
             return result;
+        }
+
+        result_t BeginOneTime(VkCommandBufferInheritanceInfo& inheritanceInfo) const
+        {
+            // “录一次、提一次”的二级命令缓冲区，是教程里最常见的用法之一。
+            return Begin(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT, inheritanceInfo);
         }
 
         result_t Begin(VkCommandBufferUsageFlags usageFlags = 0) const
@@ -2499,12 +2506,37 @@ namespace vulkan
             return result;
         }
 
+        result_t BeginOneTime() const
+        {
+            // 主循环里这种逐帧重录、逐帧提交的命令缓冲区，通常都属于 one-time submit。
+            return Begin(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
+        }
+
         result_t End() const
         {
             VkResult result = vkEndCommandBuffer(handle);
             if (result)
                 outStream << std::format("[ commandBuffer ] ERROR\nFailed to end a command buffer!\nError code: {}\n", int32_t(result));
             return result;
+        }
+
+        result_t Reset(VkCommandBufferResetFlags flags = 0) const
+        {
+            // 若命令池允许单独 reset 命令缓冲区，就可以显式把它打回初始状态。
+            VkResult result = vkResetCommandBuffer(handle, flags);
+            if (result)
+                outStream << std::format("[ commandBuffer ] ERROR\nFailed to reset a command buffer!\nError code: {}\n", int32_t(result));
+            return result;
+        }
+
+        void CmdExecute(arrayRef<const VkCommandBuffer> secondaryCommandBuffers) const
+        {
+            // 一次执行零个二级命令缓冲区没有意义，这里直接提前返回。
+            if (!secondaryCommandBuffers.Count())
+                return;
+
+            // 一级命令缓冲区通过这条命令把二级命令缓冲区的内容拼接进来。
+            vkCmdExecuteCommands(handle, uint32_t(secondaryCommandBuffers.Count()), secondaryCommandBuffers.Pointer());
         }
     };
 
@@ -2541,6 +2573,10 @@ namespace vulkan
         //Const Function
         result_t AllocateBuffers(arrayRef<VkCommandBuffer> buffers, VkCommandBufferLevel level = VK_COMMAND_BUFFER_LEVEL_PRIMARY) const
         {
+            // 空数组无需分配，直接返回成功能让上层写批量逻辑时更省心。
+            if (!buffers.Count())
+                return VK_SUCCESS;
+
             VkCommandBufferAllocateInfo allocateInfo = {
                 .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
                 .commandPool = handle,
@@ -2555,6 +2591,10 @@ namespace vulkan
 
         result_t AllocateBuffers(arrayRef<commandBuffer> buffers, VkCommandBufferLevel level = VK_COMMAND_BUFFER_LEVEL_PRIMARY) const
         {
+            // 这里把包装类内部的 Vulkan handle 连成一段数组，再复用原始版本。
+            if (!buffers.Count())
+                return VK_SUCCESS;
+
             return AllocateBuffers(
                 {&buffers[0].handle, buffers.Count()},
                 level);
@@ -2562,18 +2602,36 @@ namespace vulkan
 
         void FreeBuffers(arrayRef<VkCommandBuffer> buffers) const
         {
+            // 空数组无需释放，也避免把空指针传进 Vulkan。
+            if (!buffers.Count())
+                return;
+
             vkFreeCommandBuffers(graphicsBase::Base().Device(), handle, buffers.Count(), buffers.Pointer());
             memset(buffers.Pointer(), 0, buffers.Count() * sizeof(VkCommandBuffer));
         }
 
         void FreeBuffers(arrayRef<commandBuffer> buffers) const
         {
+            // 包装类版本同样先处理空数组，再借用原始句柄版本。
+            if (!buffers.Count())
+                return;
+
             FreeBuffers({&buffers[0].handle, buffers.Count()});
+        }
+
+        result_t Reset(VkCommandPoolResetFlags flags = 0) const
+        {
+            // reset 整个命令池时，会把从中分配出的命令缓冲区一起打回初始状态。
+            VkResult result = vkResetCommandPool(graphicsBase::Base().Device(), handle, flags);
+            if (result)
+                outStream << std::format("[ commandPool ] ERROR\nFailed to reset a command pool!\nError code: {}\n", int32_t(result));
+            return result;
         }
 
         //Non-const Function
         result_t Create(VkCommandPoolCreateInfo& createInfo)
         {
+            // 与前面的封装一样，统一在这里补齐 sType。
             createInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
             VkResult result = vkCreateCommandPool(graphicsBase::Base().Device(), &createInfo, nullptr, &handle);
             if (result)

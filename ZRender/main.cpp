@@ -145,8 +145,8 @@ int main()
         // 记住当前取到的是第几张交换链图像，后面要用它选择对应帧缓冲。
         const auto i = graphicsBase::Base().CurrentImageIndex();
 
-        // 开始录制这一帧的命令缓冲区。
-        commandBuffer.Begin(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
+        // 开始录制这一帧的命令缓冲区；逐帧重录的主命令缓冲区最适合 one-time submit。
+        commandBuffer.BeginOneTime();
 
         // 进入渲染通道，并把当前帧缓冲清成红色。
         renderPass.CmdBegin(commandBuffer, framebuffers[i], {{}, windowSize}, clearColor);
