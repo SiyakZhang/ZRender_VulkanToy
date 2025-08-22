@@ -2193,6 +2193,55 @@ namespace vulkan
         }
     };
 
+    class descriptorSetLayout
+    {
+        VkDescriptorSetLayout handle = VK_NULL_HANDLE;
+
+    public:
+        descriptorSetLayout() = default;
+
+        descriptorSetLayout(VkDescriptorSetLayoutCreateInfo& createInfo)
+        {
+            Create(createInfo);
+        }
+
+        descriptorSetLayout(descriptorSetLayout&& other) noexcept
+        {
+            MoveHandle;
+        }
+
+        ~descriptorSetLayout()
+        {
+            DestroyHandleBy(vkDestroyDescriptorSetLayout);
+        }
+
+        //Getter
+        DefineHandleTypeOperator;
+        DefineAddressFunction;
+        //Non-const Function
+        result_t Create(
+            arrayRef<const VkDescriptorSetLayoutBinding> bindings,
+            VkDescriptorSetLayoutCreateFlags flags = 0)
+        {
+            // 描述符集布局的核心就是一组 binding 描述，告诉着色器每个槽位放什么资源。
+            VkDescriptorSetLayoutCreateInfo createInfo = {
+                .flags = flags,
+                .bindingCount = uint32_t(bindings.Count()),
+                .pBindings = bindings.Pointer()};
+            return Create(createInfo);
+        }
+
+        result_t Create(VkDescriptorSetLayoutCreateInfo& createInfo)
+        {
+            // 与前面的封装保持一致，由包装类统一补齐 sType。
+            createInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+            VkResult result = vkCreateDescriptorSetLayout(graphicsBase::Base().Device(), &createInfo, nullptr, &handle);
+            if (result)
+                outStream << std::format("[ descriptorSetLayout ] ERROR\nFailed to create a descriptor set layout!\nError code: {}\n", int32_t(result));
+            return result;
+        }
+    };
+
     class pipelineLayout
     {
         VkPipelineLayout handle = VK_NULL_HANDLE;
@@ -2645,6 +2694,259 @@ namespace vulkan
                 .flags = flags,
                 .queueFamilyIndex = queueFamilyIndex
             };
+            return Create(createInfo);
+        }
+    };
+
+    class descriptorSet
+    {
+        friend class descriptorPool;
+        VkDescriptorSet handle = VK_NULL_HANDLE;
+
+    public:
+        descriptorSet() = default;
+
+        descriptorSet(descriptorSet&& other) noexcept
+        {
+            MoveHandle;
+        }
+
+        //Getter
+        DefineHandleTypeOperator;
+        DefineAddressFunction;
+        //Const Function
+        void Write(
+            arrayRef<const VkDescriptorImageInfo> descriptorInfos,
+            VkDescriptorType descriptorType,
+            uint32_t dstBinding = 0,
+            uint32_t dstArrayElement = 0) const
+        {
+            // 图像类描述符会把 image view、采样器和图像布局信息一起写进描述符集。
+            VkWriteDescriptorSet writeDescriptorSet = {
+                .dstSet = handle,
+                .dstBinding = dstBinding,
+                .dstArrayElement = dstArrayElement,
+                .descriptorCount = uint32_t(descriptorInfos.Count()),
+                .descriptorType = descriptorType,
+                .pImageInfo = descriptorInfos.Pointer()};
+            Update(writeDescriptorSet);
+        }
+
+        void Write(
+            arrayRef<const VkDescriptorBufferInfo> descriptorInfos,
+            VkDescriptorType descriptorType,
+            uint32_t dstBinding = 0,
+            uint32_t dstArrayElement = 0) const
+        {
+            // 缓冲区类描述符通常会写入缓冲区句柄、偏移和范围。
+            VkWriteDescriptorSet writeDescriptorSet = {
+                .dstSet = handle,
+                .dstBinding = dstBinding,
+                .dstArrayElement = dstArrayElement,
+                .descriptorCount = uint32_t(descriptorInfos.Count()),
+                .descriptorType = descriptorType,
+                .pBufferInfo = descriptorInfos.Pointer()};
+            Update(writeDescriptorSet);
+        }
+
+        void Write(
+            arrayRef<const VkBufferView> descriptorInfos,
+            VkDescriptorType descriptorType,
+            uint32_t dstBinding = 0,
+            uint32_t dstArrayElement = 0) const
+        {
+            // Texel buffer 使用的是 buffer view，因此对应的是 pTexelBufferView。
+            VkWriteDescriptorSet writeDescriptorSet = {
+                .dstSet = handle,
+                .dstBinding = dstBinding,
+                .dstArrayElement = dstArrayElement,
+                .descriptorCount = uint32_t(descriptorInfos.Count()),
+                .descriptorType = descriptorType,
+                .pTexelBufferView = descriptorInfos.Pointer()};
+            Update(writeDescriptorSet);
+        }
+
+        void Write(
+            arrayRef<const bufferView> descriptorInfos,
+            VkDescriptorType descriptorType,
+            uint32_t dstBinding = 0,
+            uint32_t dstArrayElement = 0) const
+        {
+            // 若上传的是包装过的 bufferView，就先转回 Vulkan 原生句柄数组再复用上面的重载。
+            if (!descriptorInfos.Count())
+            {
+                Write(arrayRef<const VkBufferView>(nullptr, 0), descriptorType, dstBinding, dstArrayElement);
+                return;
+            }
+
+            Write({descriptorInfos[0].Address(), descriptorInfos.Count()}, descriptorType, dstBinding, dstArrayElement);
+        }
+
+        //Static Function
+        static void Update(arrayRef<VkWriteDescriptorSet> writes, arrayRef<VkCopyDescriptorSet> copies = {})
+        {
+            // Vulkan 要求每个写入 / 拷贝结构体都带有正确的 sType。
+            for (auto& write : writes)
+                write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+
+            for (auto& copy : copies)
+                copy.sType = VK_STRUCTURE_TYPE_COPY_DESCRIPTOR_SET;
+
+            // 统一批量提交更新，后面写 UBO、纹理、采样器时都会反复用到。
+            vkUpdateDescriptorSets(
+                graphicsBase::Base().Device(),
+                uint32_t(writes.Count()),
+                writes.Pointer(),
+                uint32_t(copies.Count()),
+                copies.Pointer());
+        }
+    };
+
+    class descriptorPool
+    {
+        VkDescriptorPool handle = VK_NULL_HANDLE;
+
+    public:
+        descriptorPool() = default;
+
+        descriptorPool(VkDescriptorPoolCreateInfo& createInfo)
+        {
+            Create(createInfo);
+        }
+
+        descriptorPool(
+            uint32_t maxSetCount,
+            arrayRef<const VkDescriptorPoolSize> poolSizes,
+            VkDescriptorPoolCreateFlags flags = 0)
+        {
+            Create(maxSetCount, poolSizes, flags);
+        }
+
+        descriptorPool(descriptorPool&& other) noexcept
+        {
+            MoveHandle;
+        }
+
+        ~descriptorPool()
+        {
+            DestroyHandleBy(vkDestroyDescriptorPool);
+        }
+
+        //Getter
+        DefineHandleTypeOperator;
+        DefineAddressFunction;
+        //Const Function
+        result_t AllocateSets(arrayRef<VkDescriptorSet> sets, arrayRef<const VkDescriptorSetLayout> setLayouts) const
+        {
+            // 空数组不需要分配，让批处理逻辑更容易写。
+            if (!sets.Count())
+                return VK_SUCCESS;
+
+            // 每个待分配的 descriptor set 都必须有一个对应的布局。
+            if (sets.Count() != setLayouts.Count())
+            {
+                outStream << std::format("[ descriptorPool ] ERROR\nFor each descriptor set, must provide a corresponding layout!\n");
+                return VK_RESULT_MAX_ENUM; // 没有特别合适的 VkResult，就沿用前面已有的做法。
+            }
+
+            VkDescriptorSetAllocateInfo allocateInfo = {
+                .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+                .descriptorPool = handle,
+                .descriptorSetCount = uint32_t(sets.Count()),
+                .pSetLayouts = setLayouts.Pointer()};
+            VkResult result = vkAllocateDescriptorSets(graphicsBase::Base().Device(), &allocateInfo, sets.Pointer());
+            if (result)
+                outStream << std::format("[ descriptorPool ] ERROR\nFailed to allocate descriptor sets!\nError code: {}\n", int32_t(result));
+            return result;
+        }
+
+        result_t AllocateSets(arrayRef<VkDescriptorSet> sets, arrayRef<const descriptorSetLayout> setLayouts) const
+        {
+            // descriptorSetLayout 包装类本质上只是在持有 VkDescriptorSetLayout 句柄。
+            if (!sets.Count())
+                return VK_SUCCESS;
+
+            if (sets.Count() != setLayouts.Count())
+            {
+                outStream << std::format("[ descriptorPool ] ERROR\nFor each descriptor set, must provide a corresponding layout!\n");
+                return VK_RESULT_MAX_ENUM;
+            }
+
+            return AllocateSets(
+                sets,
+                {setLayouts[0].Address(), setLayouts.Count()});
+        }
+
+        result_t AllocateSets(arrayRef<descriptorSet> sets, arrayRef<const VkDescriptorSetLayout> setLayouts) const
+        {
+            // 这里把包装类里的私有 handle 拼成一段连续数组，再复用原生版本。
+            if (!sets.Count())
+                return VK_SUCCESS;
+
+            return AllocateSets(
+                {&sets[0].handle, sets.Count()},
+                setLayouts);
+        }
+
+        result_t AllocateSets(arrayRef<descriptorSet> sets, arrayRef<const descriptorSetLayout> setLayouts) const
+        {
+            // 同时把“包装 descriptor set”和“包装 layout”都转回 Vulkan 原生句柄。
+            if (!sets.Count())
+                return VK_SUCCESS;
+
+            if (sets.Count() != setLayouts.Count())
+            {
+                outStream << std::format("[ descriptorPool ] ERROR\nFor each descriptor set, must provide a corresponding layout!\n");
+                return VK_RESULT_MAX_ENUM;
+            }
+
+            return AllocateSets(
+                {&sets[0].handle, sets.Count()},
+                {setLayouts[0].Address(), setLayouts.Count()});
+        }
+
+        result_t FreeSets(arrayRef<VkDescriptorSet> sets) const
+        {
+            // 空数组无需释放，也避免把空指针传给 Vulkan。
+            if (!sets.Count())
+                return VK_SUCCESS;
+
+            VkResult result = vkFreeDescriptorSets(graphicsBase::Base().Device(), handle, uint32_t(sets.Count()), sets.Pointer());
+            memset(sets.Pointer(), 0, sets.Count() * sizeof(VkDescriptorSet));
+            return result; // vkFreeDescriptorSets(...) 正常情况下只会返回 VK_SUCCESS。
+        }
+
+        result_t FreeSets(arrayRef<descriptorSet> sets) const
+        {
+            // 包装类版本继续复用原始 VkDescriptorSet 版本即可。
+            if (!sets.Count())
+                return VK_SUCCESS;
+
+            return FreeSets({&sets[0].handle, sets.Count()});
+        }
+
+        //Non-const Function
+        result_t Create(VkDescriptorPoolCreateInfo& createInfo)
+        {
+            // 仍然沿用“调用前统一补 sType”的封装习惯。
+            createInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+            VkResult result = vkCreateDescriptorPool(graphicsBase::Base().Device(), &createInfo, nullptr, &handle);
+            if (result)
+                outStream << std::format("[ descriptorPool ] ERROR\nFailed to create a descriptor pool!\nError code: {}\n", int32_t(result));
+            return result;
+        }
+
+        result_t Create(
+            uint32_t maxSetCount,
+            arrayRef<const VkDescriptorPoolSize> poolSizes,
+            VkDescriptorPoolCreateFlags flags = 0)
+        {
+            // 描述符池需要同时指定“最多分多少套”以及“每种描述符准备多少个”。
+            VkDescriptorPoolCreateInfo createInfo = {
+                .flags = flags,
+                .maxSets = maxSetCount,
+                .poolSizeCount = uint32_t(poolSizes.Count()),
+                .pPoolSizes = poolSizes.Pointer()};
             return Create(createInfo);
         }
     };
