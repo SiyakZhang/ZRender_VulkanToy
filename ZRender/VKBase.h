@@ -2987,4 +2987,359 @@ namespace vulkan
             return Create(createInfo);
         }
     };
+
+    class queryPool
+    {
+        VkQueryPool handle = VK_NULL_HANDLE;
+
+    public:
+        queryPool() = default;
+
+        queryPool(VkQueryPoolCreateInfo& createInfo)
+        {
+            Create(createInfo);
+        }
+
+        queryPool(
+            VkQueryType queryType,
+            uint32_t queryCount,
+            VkQueryPipelineStatisticFlags pipelineStatistics = 0)
+        {
+            Create(queryType, queryCount, pipelineStatistics);
+        }
+
+        queryPool(queryPool&& other) noexcept
+        {
+            MoveHandle;
+        }
+
+        ~queryPool()
+        {
+            DestroyHandleBy(vkDestroyQueryPool);
+        }
+
+        //Getter
+        DefineHandleTypeOperator;
+        DefineAddressFunction;
+        //Const Function
+        void CmdReset(VkCommandBuffer commandBuffer, uint32_t firstQueryIndex, uint32_t queryCount) const
+        {
+            // 在命令缓冲区中 reset，适合与接下来的查询命令配套录制。
+            vkCmdResetQueryPool(commandBuffer, handle, firstQueryIndex, queryCount);
+        }
+
+        void CmdBegin(VkCommandBuffer commandBuffer, uint32_t queryIndex, VkQueryControlFlags flags = 0) const
+        {
+            // 遮挡查询和管线统计查询都需要显式 Begin / End 包裹查询范围。
+            vkCmdBeginQuery(commandBuffer, handle, queryIndex, flags);
+        }
+
+        void CmdEnd(VkCommandBuffer commandBuffer, uint32_t queryIndex) const
+        {
+            // 与 CmdBegin 成对出现，标记该条查询的结束。
+            vkCmdEndQuery(commandBuffer, handle, queryIndex);
+        }
+
+        void CmdWriteTimestamp(VkCommandBuffer commandBuffer, VkPipelineStageFlagBits pipelineStage, uint32_t queryIndex) const
+        {
+            // 时间戳查询不需要 Begin / End，而是在指定管线阶段直接写一个时间点。
+            vkCmdWriteTimestamp(commandBuffer, pipelineStage, handle, queryIndex);
+        }
+
+        void CmdCopyResults(
+            VkCommandBuffer commandBuffer,
+            uint32_t firstQueryIndex,
+            uint32_t queryCount,
+            VkBuffer buffer_dst,
+            VkDeviceSize offset_dst,
+            VkDeviceSize stride,
+            VkQueryResultFlags flags = 0) const
+        {
+            // 也可以把查询结果直接拷到 GPU 缓冲区，而不是立刻回读到 CPU 内存。
+            vkCmdCopyQueryPoolResults(commandBuffer, handle, firstQueryIndex, queryCount, buffer_dst, offset_dst, stride, flags);
+        }
+
+        result_t GetResults(
+            uint32_t firstQueryIndex,
+            uint32_t queryCount,
+            size_t dataSize,
+            void* pData_dst,
+            VkDeviceSize stride,
+            VkQueryResultFlags flags = 0) const
+        {
+            // 这是最通用的查询结果回读接口，返回结果时可选等待、64 位输出等标志。
+            VkResult result = vkGetQueryPoolResults(graphicsBase::Base().Device(), handle, firstQueryIndex, queryCount, dataSize, pData_dst, stride, flags);
+            if (result)
+            {
+                if (result > 0)
+                    outStream << std::format("[ queryPool ] WARNING\nNot all queries are available!\nError code: {}\n", int32_t(result));
+                else
+                    outStream << std::format("[ queryPool ] ERROR\nFailed to get query pool results!\nError code: {}\n", int32_t(result));
+            }
+            return result;
+        }
+
+        void Reset(uint32_t firstQueryIndex, uint32_t queryCount) const
+        {
+            // Vulkan 1.2 起也可以在主机端直接 reset 查询池。
+            vkResetQueryPool(graphicsBase::Base().Device(), handle, firstQueryIndex, queryCount);
+        }
+
+        //Non-const Function
+        result_t Create(VkQueryPoolCreateInfo& createInfo)
+        {
+            // 仍然沿用统一补齐 sType 的封装方式。
+            createInfo.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
+            VkResult result = vkCreateQueryPool(graphicsBase::Base().Device(), &createInfo, nullptr, &handle);
+            if (result)
+                outStream << std::format("[ queryPool ] ERROR\nFailed to create a query pool!\nError code: {}\n", int32_t(result));
+            return result;
+        }
+
+        result_t Create(
+            VkQueryType queryType,
+            uint32_t queryCount,
+            VkQueryPipelineStatisticFlags pipelineStatistics = 0)
+        {
+            // 查询池至少要容纳 1 个查询，否则 Vulkan 创建参数本身就没有意义。
+            if (!queryCount)
+            {
+                outStream << std::format("[ queryPool ] ERROR\nQuery count must be greater than 0!\n");
+                return VK_RESULT_MAX_ENUM;
+            }
+
+            // 不同查询类型共用同一个创建结构体，只是 queryType 和统计位不同。
+            VkQueryPoolCreateInfo createInfo = {
+                .queryType = queryType,
+                .queryCount = queryCount,
+                .pipelineStatistics = pipelineStatistics};
+            return Create(createInfo);
+        }
+    };
+
+    class pipelineStatisticQuery
+    {
+    protected:
+        enum statisticName
+        {
+            // Input Assembly
+            vertexCount_ia,
+            primitiveCount_ia,
+            // Vertex Shader
+            invocationCount_vs,
+            // Geometry Shader
+            invocationCount_gs,
+            primitiveCount_gs,
+            // Clipping
+            invocationCount_clipping,
+            primitiveCount_clipping,
+            // Fragment Shader
+            invocationCount_fs,
+            // Tessellation
+            patchCount_tcs,
+            invocationCount_tes,
+            // Compute Shader
+            invocationCount_cs,
+            statisticCount
+        };
+
+        // --------------------
+        queryPool query_pool;
+        uint32_t statistics[statisticCount] = {};
+
+    public:
+        pipelineStatisticQuery()
+        {
+            Create();
+        }
+
+        //Getter
+        operator VkQueryPool() const
+        {
+            return query_pool;
+        }
+
+        const VkQueryPool* Address() const
+        {
+            return query_pool.Address();
+        }
+
+        uint32_t VertexCount_Ia() const
+        {
+            return statistics[vertexCount_ia];
+        }
+
+        uint32_t PrimitiveCount_Ia() const
+        {
+            return statistics[primitiveCount_ia];
+        }
+
+        uint32_t InvocationCount_Vs() const
+        {
+            return statistics[invocationCount_vs];
+        }
+
+        uint32_t InvocationCount_Gs() const
+        {
+            return statistics[invocationCount_gs];
+        }
+
+        uint32_t PrimitiveCount_Gs() const
+        {
+            return statistics[primitiveCount_gs];
+        }
+
+        uint32_t InvocationCount_Clipping() const
+        {
+            return statistics[invocationCount_clipping];
+        }
+
+        uint32_t PrimitiveCount_Clipping() const
+        {
+            return statistics[primitiveCount_clipping];
+        }
+
+        uint32_t InvocationCount_Fs() const
+        {
+            return statistics[invocationCount_fs];
+        }
+
+        uint32_t PatchCount_Tcs() const
+        {
+            return statistics[patchCount_tcs];
+        }
+
+        uint32_t InvocationCount_Tes() const
+        {
+            return statistics[invocationCount_tes];
+        }
+
+        uint32_t InvocationCount_Cs() const
+        {
+            return statistics[invocationCount_cs];
+        }
+
+        //Const Function
+        void CmdReset(VkCommandBuffer commandBuffer) const
+        {
+            // 这个便捷包装固定只管理 1 组统计结果，所以范围总是 0~1。
+            query_pool.CmdReset(commandBuffer, 0, 1);
+        }
+
+        void CmdBegin(VkCommandBuffer commandBuffer) const
+        {
+            query_pool.CmdBegin(commandBuffer, 0);
+        }
+
+        void CmdEnd(VkCommandBuffer commandBuffer) const
+        {
+            query_pool.CmdEnd(commandBuffer, 0);
+        }
+
+        void CmdResetAndBegin(VkCommandBuffer commandBuffer) const
+        {
+            CmdReset(commandBuffer);
+            CmdBegin(commandBuffer);
+        }
+
+        //Non-const Function
+        result_t Create()
+        {
+            // Vulkan 的统计标志位刚好按位连续，这里直接打开前 statisticCount 位。
+            return query_pool.Create(
+                VK_QUERY_TYPE_PIPELINE_STATISTICS,
+                1,
+                VkQueryPipelineStatisticFlags((1u << statisticCount) - 1u));
+        }
+
+        result_t GetResults()
+        {
+            // 只回读 1 组完整统计，因此 stride 与数据总大小相同即可。
+            return query_pool.GetResults(0, 1, sizeof(statistics), statistics, sizeof(statistics));
+        }
+    };
+
+    class timestampQueries
+    {
+    protected:
+        queryPool query_pool;
+        std::vector<uint32_t> timestamps;
+
+    public:
+        timestampQueries() = default;
+
+        timestampQueries(uint32_t capacity)
+        {
+            Create(capacity);
+        }
+
+        //Getter
+        operator VkQueryPool() const
+        {
+            return query_pool;
+        }
+
+        const VkQueryPool* Address() const
+        {
+            return query_pool.Address();
+        }
+
+        uint32_t Capacity() const
+        {
+            return uint32_t(timestamps.size());
+        }
+
+        uint32_t Timestamp(uint32_t index) const
+        {
+            return timestamps[index];
+        }
+
+        uint32_t Duration(uint32_t index) const
+        {
+            // 相邻两个时间戳的差值就表示这段 GPU 时间跨度。
+            return timestamps[index + 1] - timestamps[index];
+        }
+
+        //Const Function
+        void CmdReset(VkCommandBuffer commandBuffer) const
+        {
+            // 时间戳查询通常成批使用，因此这里直接 reset 整个池。
+            query_pool.CmdReset(commandBuffer, 0, Capacity());
+        }
+
+        void CmdWriteTimestamp(VkCommandBuffer commandBuffer, VkPipelineStageFlagBits pipelineStage, uint32_t queryIndex) const
+        {
+            query_pool.CmdWriteTimestamp(commandBuffer, pipelineStage, queryIndex);
+        }
+
+        //Non-const Function
+        result_t Create(uint32_t capacity)
+        {
+            // 先准备好 CPU 侧缓存，再创建等容量的时间戳查询池。
+            timestamps.resize(capacity);
+            timestamps.shrink_to_fit();
+            return query_pool.Create(VK_QUERY_TYPE_TIMESTAMP, Capacity());
+        }
+
+        result_t GetResults()
+        {
+            return GetResults(Capacity());
+        }
+
+        result_t GetResults(uint32_t queryCount)
+        {
+            // 回读数量不能超过当前时间戳查询池的容量。
+            if (queryCount > Capacity())
+            {
+                outStream << std::format("[ timestampQueries ] ERROR\nRequested query count exceeds capacity!\n");
+                return VK_RESULT_MAX_ENUM;
+            }
+
+            if (!queryCount)
+                return VK_SUCCESS;
+
+            // 这里按 32 位结果读取，通常已经足够做相邻时间戳差值计算。
+            return query_pool.GetResults(0, queryCount, queryCount * sizeof(uint32_t), timestamps.data(), sizeof(uint32_t));
+        }
+    };
 }
