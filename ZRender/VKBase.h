@@ -2181,8 +2181,12 @@ namespace vulkan
         DefineHandleTypeOperator;
         DefineAddressFunction;
         //Const Function
-        VkPipelineShaderStageCreateInfo StageCreateInfo(VkShaderStageFlagBits stage, const char* entry = "main") const
+        VkPipelineShaderStageCreateInfo StageCreateInfo(
+            VkShaderStageFlagBits stage,
+            const char* entry = "main",
+            const VkSpecializationInfo* specializationInfo = nullptr) const
         {
+            // 创建图形 / 计算管线时，真正交给 Vulkan 的是“阶段创建信息”而不是 shaderModule 本身。
             return {
                 VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, //sType
                 nullptr, //pNext
@@ -2190,7 +2194,7 @@ namespace vulkan
                 stage, //stage
                 handle, //module
                 entry, //pName
-                nullptr //pSpecializationInfo
+                specializationInfo //pSpecializationInfo
             };
         }
 
@@ -2206,18 +2210,35 @@ namespace vulkan
 
         result_t Create(const char* filepath /*reserved for future use*/)
         {
+            // .spv 文件里保存的是已经编译好的 SPIR-V 二进制代码。
             std::ifstream file(filepath, std::ios::ate | std::ios::binary);
             if (!file)
             {
                 outStream << std::format("[ shader ] ERROR\nFailed to open the file: {}\n", filepath);
                 return VK_RESULT_MAX_ENUM; //No proper VkResult enum value, don't use VK_ERROR_UNKNOWN
             }
+
             size_t fileSize = size_t(file.tellg());
+
+            // Vulkan 要求 pCode 以 uint32_t 为单位读取，因此文件大小必须是 4 的倍数。
+            if (fileSize % sizeof(uint32_t))
+            {
+                outStream << std::format("[ shader ] ERROR\nShader file size is not a multiple of 4 bytes: {}\n", filepath);
+                return VK_RESULT_MAX_ENUM;
+            }
+
+            // 直接按 32 位无符号整型数组读取，正好对应 VkShaderModuleCreateInfo::pCode。
             std::vector<uint32_t> binaries(fileSize / 4);
             file.seekg(0);
             file.read(reinterpret_cast<char*>(binaries.data()), fileSize);
             file.close();
             return Create(fileSize, binaries.data());
+        }
+
+        result_t Create(arrayRef<const uint32_t> codes /*reserved for future use*/)
+        {
+            // 有些时候 SPIR-V 已经在内存里，这个重载可以避免额外组装指针和字节数。
+            return Create(codes.Count() * sizeof(uint32_t), codes.Pointer());
         }
 
         result_t Create(size_t codeSize, const uint32_t* pCode /*reserved for future use*/)

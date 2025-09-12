@@ -25,13 +25,13 @@ void CreateLayout()
 
 void CreatePipeline()
 {
-    // 顶点着色器负责直接生成三角形三个顶点。
+    // 顶点着色器的 SPIR-V 模组会在这里被读入并创建成 VkShaderModule。
     static shaderModule vert("shader/FirstTriangle.vert.spv");
 
-    // 片段着色器负责给三角形输出颜色。
+    // 片段着色器的 SPIR-V 模组同理，会在创建管线阶段作为另一个着色器阶段使用。
     static shaderModule frag("shader/FirstTriangle.frag.spv");
 
-    // 把两个着色器阶段打包成管线创建时需要的数组。
+    // 这里组装的是“管线着色器阶段创建信息”，它引用前面创建好的 shaderModule。
     static VkPipelineShaderStageCreateInfo shaderStageCreateInfos_triangle[2] = {
         vert.StageCreateInfo(VK_SHADER_STAGE_VERTEX_BIT),
         frag.StageCreateInfo(VK_SHADER_STAGE_FRAGMENT_BIT)};
