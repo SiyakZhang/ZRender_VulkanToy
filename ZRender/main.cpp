@@ -25,15 +25,30 @@ void CreateLayout()
 
 void CreatePipeline()
 {
+    // 几何着色器属于可选设备特性，先确认当前物理设备是否支持。
+    VkPhysicalDeviceFeatures physicalDeviceFeatures{};
+    vkGetPhysicalDeviceFeatures(graphicsBase::Base().PhysicalDevice(), &physicalDeviceFeatures);
+
+    // 如果不支持几何着色器，这一课对应的示例就无法继续运行。
+    if (!physicalDeviceFeatures.geometryShader)
+    {
+        outStream << "[ main ] ERROR\nCurrent GPU does not support geometry shader feature.\n";
+        abort();
+    }
+
     // 顶点着色器的 SPIR-V 模组会在这里被读入并创建成 VkShaderModule。
     static shaderModule vert("shader/FirstTriangle.vert.spv");
+
+    // 几何着色器位于顶点着色器之后、片段着色器之前，用来基于输入图元继续生成新图元。
+    static shaderModule geom("shader/FirstTriangle.geom.spv");
 
     // 片段着色器的 SPIR-V 模组同理，会在创建管线阶段作为另一个着色器阶段使用。
     static shaderModule frag("shader/FirstTriangle.frag.spv");
 
     // 这里组装的是“管线着色器阶段创建信息”，它引用前面创建好的 shaderModule。
-    static VkPipelineShaderStageCreateInfo shaderStageCreateInfos_triangle[2] = {
+    static VkPipelineShaderStageCreateInfo shaderStageCreateInfos_triangle[3] = {
         vert.StageCreateInfo(VK_SHADER_STAGE_VERTEX_BIT),
+        geom.StageCreateInfo(VK_SHADER_STAGE_GEOMETRY_BIT),
         frag.StageCreateInfo(VK_SHADER_STAGE_FRAGMENT_BIT)};
 
     auto Create = [] {
@@ -70,7 +85,7 @@ void CreatePipeline()
         // 把各 vector 里的状态数量和地址同步回原生 Vulkan 结构体。
         pipelineCiPack.UpdateAllArrays();
 
-        // 当前管线只包含顶点和片段两个阶段。
+        // 当前管线现在包含顶点、几何、片段三个阶段。
         pipelineCiPack.SetShaderStages(shaderStageCreateInfos_triangle);
 
         // 真正创建 Vulkan 图形管线。
@@ -154,7 +169,8 @@ int main()
         // 绑定本节创建好的图形管线。
         pipeline_triangle.CmdBind(commandBuffer);
 
-        // 直接画 3 个顶点，组成一个最简单的三角形。
+        // CPU 侧仍然只提交 3 个顶点，先生成一个输入三角形。
+        // 几何着色器会在这个基础上额外再生成一个更小的内层三角形。
         vkCmdDraw(commandBuffer, 3, 1, 0, 0);
 
         // 结束当前渲染通道。

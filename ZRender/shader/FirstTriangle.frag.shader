@@ -1,7 +1,8 @@
 #version 460
 #pragma shader_stage(fragment)
 
-// 接收顶点着色器在 location = 0 输出的颜色。
+// 接收上一个着色器阶段在 location = 0 输出的颜色。
+// 当前这一版上一个阶段是几何着色器；如果拿掉几何阶段，也可以直接来自顶点着色器。
 // 栅格化阶段会在三角形内部自动对这个值做插值。
 layout(location = 0) in vec3 v_Color;
 
