@@ -26,10 +26,16 @@
     <ClInclude Include="VKBase.h">
       <Filter>头文件</Filter>
     </ClInclude>
+    <ClInclude Include="VKBase+.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
     <ClInclude Include="GlfwGeneral.hpp">
       <Filter>头文件</Filter>
     </ClInclude>
     <ClInclude Include="RPFB_Screen.hpp">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="VKFormat.h">
       <Filter>头文件</Filter>
     </ClInclude>
     <ClInclude Include="VulkanGraphicsPipelineBuilder.h">

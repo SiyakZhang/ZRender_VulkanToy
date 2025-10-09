@@ -144,7 +144,9 @@
   <ItemGroup>
     <ClInclude Include="GlfwGeneral.hpp" />
     <ClInclude Include="RPFB_Screen.hpp" />
+    <ClInclude Include="VKBase+.h" />
     <ClInclude Include="VKBase.h" />
+    <ClInclude Include="VKFormat.h" />
     <ClInclude Include="VKHead.h" />
     <ClInclude Include="VulkanGraphicsPipelineBuilder.h" />
   </ItemGroup>

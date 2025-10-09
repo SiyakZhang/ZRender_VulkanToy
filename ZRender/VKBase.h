@@ -70,8 +70,14 @@ namespace vulkan
     using result_t = VkResult;
 #endif
 
+    // 前置声明扩展层，让 graphicsBase 可以持有一个“增强封装”的入口。
+    class graphicsBasePlus;
+
     class graphicsBase
     {
+        // 指向 VKBase+.h 中定义的扩展层单例。
+        graphicsBasePlus* pPlus = nullptr;
+
         //静态变量
         static graphicsBase singleton;
         //--------------------
@@ -116,6 +122,26 @@ namespace vulkan
         static graphicsBase& Base()
         {
             return singleton;
+        }
+
+        // 访问 VKBase+.h 中的扩展层单例。
+        static graphicsBasePlus& Plus()
+        {
+#ifndef NDEBUG
+            if (!singleton.pPlus)
+            {
+                outStream << "[ graphicsBase ] ERROR\ngraphicsBasePlus has not been initialized yet.\n";
+                abort();
+            }
+#endif
+            return *singleton.pPlus;
+        }
+
+        // 只允许扩展层在首次初始化时把自己挂到 graphicsBase 上。
+        static void Plus(graphicsBasePlus& plus)
+        {
+            if (!singleton.pPlus)
+                singleton.pPlus = &plus;
         }
 
         void Terminate()
