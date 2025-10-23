@@ -1,3 +1,4 @@
+#define STB_IMAGE_IMPLEMENTATION
 #include "GlfwGeneral.hpp"
 #include "RPFB_Screen.hpp"
 #include "VKBase+.h"

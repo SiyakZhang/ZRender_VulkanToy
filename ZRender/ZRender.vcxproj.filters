@@ -35,6 +35,9 @@
     <ClInclude Include="RPFB_Screen.hpp">
       <Filter>头文件</Filter>
     </ClInclude>
+    <ClInclude Include="stb_image.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
     <ClInclude Include="VKFormat.h">
       <Filter>头文件</Filter>
     </ClInclude>
