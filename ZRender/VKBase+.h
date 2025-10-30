@@ -1516,6 +1516,321 @@ namespace vulkan
         }
     };
 
+    class texture2dArray : public texture
+    {
+    protected:
+        // 数组贴图除了单层大小，还要额外记录总层数。
+        VkExtent2D extent = {};
+        uint32_t layerCount = 0;
+
+        void Create_Internal(VkFormat format_initial, VkFormat format_final, bool generateMipmap)
+        {
+            // 若启用 mipmap，就为每一层都创建完整 mip 链。
+            const uint32_t mipLevelCount = generateMipmap ? CalculateMipLevelCount(extent) : 1;
+
+            // 创建最终的 2D_ARRAY 图像。
+            CreateImageMemory(
+                VK_IMAGE_TYPE_2D,
+                format_final,
+                {extent.width, extent.height, 1},
+                mipLevelCount,
+                layerCount);
+
+            // 数组贴图对应的视图类型也要改成 2D_ARRAY。
+            CreateImageView(VK_IMAGE_VIEW_TYPE_2D_ARRAY, format_final, mipLevelCount, layerCount);
+
+            // 若源格式与目标格式一致，就可直接从 staging buffer 上传所有层。
+            if (format_initial == format_final)
+            {
+                CopyBlitAndGenerateMipmap2d(
+                    stagingBuffer::Buffer_MainThread(),
+                    imageMemory.Image(),
+                    imageMemory.Image(),
+                    extent,
+                    mipLevelCount,
+                    layerCount);
+            }
+            else
+            {
+                // 否则先创建一张中转数组图像，再从中转图像 blit 到最终数组贴图。
+                VkImageCreateInfo imageCreateInfo = {
+                    .imageType = VK_IMAGE_TYPE_2D,
+                    .format = format_initial,
+                    .extent = {extent.width, extent.height, 1},
+                    .mipLevels = 1,
+                    .arrayLayers = layerCount,
+                    .samples = VK_SAMPLE_COUNT_1_BIT,
+                    .usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT};
+
+                vulkan::imageMemory imageMemory_conversion(
+                    imageCreateInfo,
+                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+                CopyBlitAndGenerateMipmap2d(
+                    stagingBuffer::Buffer_MainThread(),
+                    imageMemory_conversion.Image(),
+                    imageMemory.Image(),
+                    extent,
+                    mipLevelCount,
+                    layerCount);
+            }
+        }
+
+    public:
+        texture2dArray() = default;
+
+        texture2dArray(
+            const char* filepath,
+            VkExtent2D extentInTiles,
+            VkFormat format_initial,
+            VkFormat format_final,
+            bool generateMipmap = true)
+        {
+            Create(filepath, extentInTiles, format_initial, format_final, generateMipmap);
+        }
+
+        texture2dArray(
+            const uint8_t* pImageData,
+            VkExtent2D fullExtent,
+            VkExtent2D extentInTiles,
+            VkFormat format_initial,
+            VkFormat format_final,
+            bool generateMipmap = true)
+        {
+            Create(pImageData, fullExtent, extentInTiles, format_initial, format_final, generateMipmap);
+        }
+
+        texture2dArray(
+            arrayRef<const char* const> filepaths,
+            VkFormat format_initial,
+            VkFormat format_final,
+            bool generateMipmap = true)
+        {
+            Create(filepaths, format_initial, format_final, generateMipmap);
+        }
+
+        texture2dArray(
+            arrayRef<const uint8_t* const> psImageData,
+            VkExtent2D extent,
+            VkFormat format_initial,
+            VkFormat format_final,
+            bool generateMipmap = true)
+        {
+            Create(psImageData, extent, format_initial, format_final, generateMipmap);
+        }
+
+        VkExtent2D Extent() const
+        {
+            return extent;
+        }
+
+        uint32_t Width() const
+        {
+            return extent.width;
+        }
+
+        uint32_t Height() const
+        {
+            return extent.height;
+        }
+
+        uint32_t LayerCount() const
+        {
+            return layerCount;
+        }
+
+        void Create(
+            const char* filepath,
+            VkExtent2D extentInTiles,
+            VkFormat format_initial,
+            VkFormat format_final,
+            bool generateMipmap = true)
+        {
+            // 图集拆分后的层数就是横向单元数乘纵向单元数。
+            const uint32_t requestedLayerCount = extentInTiles.width * extentInTiles.height;
+            if (requestedLayerCount > graphicsBase::Base().PhysicalDeviceProperties().limits.maxImageArrayLayers)
+            {
+                outStream << std::format(
+                    "[ texture2dArray ] ERROR\nLayer count is out of limit! Must be less than: {}\nFile: {}\n",
+                    graphicsBase::Base().PhysicalDeviceProperties().limits.maxImageArrayLayers,
+                    filepath);
+                return;
+            }
+
+            // 先把整张图集读进内存，再交给下一层重载去切分。
+            VkExtent2D fullExtent = {};
+            const formatInfo formatDetails = FormatInfo(format_initial);
+            imageData_t pImageData = LoadFile(filepath, fullExtent, formatDetails);
+            if (!pImageData)
+                return;
+
+            // 图集宽高必须能被网格尺寸整除，否则没法切成等大的数组层。
+            if (fullExtent.width % extentInTiles.width || fullExtent.height % extentInTiles.height)
+            {
+                outStream << std::format(
+                    "[ texture2dArray ] ERROR\nImage not available!\nFile: {}\nImage width should be in multiples of {}\nImage height should be in multiples of {}\n",
+                    filepath,
+                    extentInTiles.width,
+                    extentInTiles.height);
+                return;
+            }
+
+            Create(pImageData.get(), fullExtent, extentInTiles, format_initial, format_final, generateMipmap);
+        }
+
+        void Create(
+            const uint8_t* pImageData,
+            VkExtent2D fullExtent,
+            VkExtent2D extentInTiles,
+            VkFormat format_initial,
+            VkFormat format_final,
+            bool generateMipmap = true)
+        {
+            // 先记下总层数，后面创建图像和录制 copy 区域都会用到它。
+            layerCount = extentInTiles.width * extentInTiles.height;
+            if (layerCount > graphicsBase::Base().PhysicalDeviceProperties().limits.maxImageArrayLayers)
+            {
+                outStream << std::format(
+                    "[ texture2dArray ] ERROR\nLayer count is out of limit! Must be less than: {}\n",
+                    graphicsBase::Base().PhysicalDeviceProperties().limits.maxImageArrayLayers);
+                return;
+            }
+
+            // 仍然要确保图集尺寸能被切分网格整除。
+            if (fullExtent.width % extentInTiles.width || fullExtent.height % extentInTiles.height)
+            {
+                outStream << std::format(
+                    "[ texture2dArray ] ERROR\nImage not available!\nImage width should be in multiples of {}\nImage height should be in multiples of {}\n",
+                    extentInTiles.width,
+                    extentInTiles.height);
+                return;
+            }
+
+            // 单层贴图的尺寸等于整张图集按网格切开后的单元大小。
+            extent.width = fullExtent.width / extentInTiles.width;
+            extent.height = fullExtent.height / extentInTiles.height;
+
+            const size_t dataSizePerPixel = FormatInfo(format_initial).sizePerPixel;
+            const size_t imageDataSize = dataSizePerPixel * fullExtent.width * fullExtent.height;
+
+            // 若图集只有一列，那么各层在内存中本来就是逐层连续摆放的，可以直接整块上传。
+            if (extentInTiles.width == 1)
+            {
+                stagingBuffer::BufferData_MainThread(pImageData, imageDataSize);
+            }
+            else
+            {
+                // 多列图集需要先重排成“layer0 全部数据、layer1 全部数据……”的顺序。
+                uint8_t* pData_dst = static_cast<uint8_t*>(stagingBuffer::MapMemory_MainThread(imageDataSize));
+                const size_t dataSizePerRow = dataSizePerPixel * extent.width;
+
+                // 外层按图集的 tile 行列遍历，内层再逐行把每个 tile 拷到 staging buffer 中。
+                for (size_t j = 0; j < extentInTiles.height; ++j)
+                {
+                    for (size_t i = 0; i < extentInTiles.width; ++i)
+                    {
+                        for (size_t k = 0; k < extent.height; ++k)
+                        {
+                            memcpy(
+                                pData_dst,
+                                pImageData + (i * extent.width + (k + j * extent.height) * fullExtent.width) * dataSizePerPixel,
+                                dataSizePerRow);
+                            pData_dst += dataSizePerRow;
+                        }
+                    }
+                }
+
+                // 所有层排布完以后，再统一 flush / unmap。
+                stagingBuffer::UnmapMemory_MainThread();
+            }
+
+            // staging buffer 就绪后，后续与普通 2D 贴图一样交给内部创建流程。
+            Create_Internal(format_initial, format_final, generateMipmap);
+        }
+
+        void Create(
+            arrayRef<const char* const> filepaths,
+            VkFormat format_initial,
+            VkFormat format_final,
+            bool generateMipmap = true)
+        {
+            // 传入多个文件时，每个文件天然对应数组贴图的一层。
+            if (filepaths.Count() > graphicsBase::Base().PhysicalDeviceProperties().limits.maxImageArrayLayers)
+            {
+                outStream << std::format(
+                    "[ texture2dArray ] ERROR\nLayer count is out of limit! Must be less than: {}\n",
+                    graphicsBase::Base().PhysicalDeviceProperties().limits.maxImageArrayLayers);
+                return;
+            }
+
+            const formatInfo formatDetails = FormatInfo(format_initial);
+            std::vector<imageData_t> images(filepaths.Count());
+            std::vector<const uint8_t*> imagePointers(filepaths.Count());
+
+            // 逐张读取，并检查它们是否都是同一尺寸。
+            for (size_t i = 0; i < filepaths.Count(); ++i)
+            {
+                VkExtent2D extent_currentLayer = {};
+                images[i] = LoadFile(filepaths[i], extent_currentLayer, formatDetails);
+                if (!images[i])
+                    return;
+
+                if (i == 0)
+                {
+                    extent = extent_currentLayer;
+                }
+                else if (extent.width != extent_currentLayer.width || extent.height != extent_currentLayer.height)
+                {
+                    outStream << std::format(
+                        "[ texture2dArray ] ERROR\nImage not available!\nFile: {}\nAll the images must be in same size!\n",
+                        filepaths[i]);
+                    return;
+                }
+
+                // 保存裸指针，仅用于后面把各层数据拼进 staging buffer。
+                imagePointers[i] = images[i].get();
+            }
+
+            Create({imagePointers.data(), imagePointers.size()}, extent, format_initial, format_final, generateMipmap);
+        }
+
+        void Create(
+            arrayRef<const uint8_t* const> psImageData,
+            VkExtent2D extent,
+            VkFormat format_initial,
+            VkFormat format_final,
+            bool generateMipmap = true)
+        {
+            // 从多张独立图片直接创建时，数组层数就是图片数量。
+            layerCount = uint32_t(psImageData.Count());
+            if (layerCount > graphicsBase::Base().PhysicalDeviceProperties().limits.maxImageArrayLayers)
+            {
+                outStream << std::format(
+                    "[ texture2dArray ] ERROR\nLayer count is out of limit! Must be less than: {}\n",
+                    graphicsBase::Base().PhysicalDeviceProperties().limits.maxImageArrayLayers);
+                return;
+            }
+
+            this->extent = extent;
+
+            // 每一层图片大小一致，所以可以简单按 layer 顺序顺次写入 staging buffer。
+            const size_t dataSizePerImage = size_t(FormatInfo(format_initial).sizePerPixel) * extent.width * extent.height;
+            const size_t imageDataSize = dataSizePerImage * layerCount;
+            uint8_t* pData_dst = static_cast<uint8_t*>(stagingBuffer::MapMemory_MainThread(imageDataSize));
+
+            for (size_t i = 0; i < layerCount; ++i)
+            {
+                memcpy(pData_dst, psImageData[i], dataSizePerImage);
+                pData_dst += dataSizePerImage;
+            }
+
+            stagingBuffer::UnmapMemory_MainThread();
+
+            // 数据准备完成后，再统一创建目标数组贴图。
+            Create_Internal(format_initial, format_final, generateMipmap);
+        }
+    };
+
     // 便捷的全局格式特性查询入口。
     inline const VkFormatProperties& FormatProperties(VkFormat format)
     {
