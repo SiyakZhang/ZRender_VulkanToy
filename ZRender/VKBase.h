@@ -214,6 +214,7 @@ namespace vulkan
             VkInstanceCreateInfo instanceCreateInfo = {
                 .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
                 .flags = flags,
+                .pNext = pNext_instanceCreateInfo,
                 .pApplicationInfo = &applicatianInfo,
                 .enabledLayerCount = uint32_t(instanceLayers.size()),
                 .ppEnabledLayerNames = instanceLayers.data(),
@@ -329,6 +330,43 @@ namespace vulkan
 
     private:
         VkDebugUtilsMessengerEXT debugMessenger;
+
+        static void** SetPNext(void*& pBegin, void* pNext, bool allowDuplicate = false)
+        {
+            // Vulkan 的 pNext 链本质上是一串“首字段为 sType，次字段为 pNext”的结构体链表。
+            struct vkStructureHead
+            {
+                VkStructureType sType;
+                void* pNext;
+            };
+
+            // 空指针没有意义，直接忽略。
+            if (!pNext)
+                return nullptr;
+
+            // 用纯迭代方式遍历链表，兼容当前工程的 C++20 编译标准。
+            void** ppCurrent = &pBegin;
+            const VkStructureType sType_next = reinterpret_cast<vkStructureHead*>(pNext)->sType;
+
+            while (*ppCurrent)
+            {
+                // 同一个结构体实例不应被重复插到同一条链里。
+                if (*ppCurrent == pNext)
+                    return nullptr;
+
+                auto* pCurrent = reinterpret_cast<vkStructureHead*>(*ppCurrent);
+
+                // 默认按 sType 去重，避免同类结构体被不小心重复追加。
+                if (!allowDuplicate && pCurrent->sType == sType_next)
+                    return nullptr;
+
+                ppCurrent = &pCurrent->pNext;
+            }
+
+            // 找到链尾后，把新结构接上去，并把该槽位地址返回给调用方。
+            *ppCurrent = pNext;
+            return ppCurrent;
+        }
         //以下函数用于创建debug messenger
         result_t CreateDebugMessenger()
         {
@@ -390,11 +428,26 @@ namespace vulkan
             return VK_SUCCESS;
         }
 
+        void AddNextStructure_InstanceCreateInfo(auto& next, bool allowDuplicate = false)
+        {
+            // 允许外部把扩展实例创建结构体追加到 VkInstanceCreateInfo::pNext。
+            SetPNext(pNext_instanceCreateInfo, &next, allowDuplicate);
+        }
+
     private:
         VkSurfaceKHR surface;
         VkPhysicalDevice physicalDevice;
-        VkPhysicalDeviceProperties physicalDeviceProperties;
-        VkPhysicalDeviceMemoryProperties physicalDeviceMemoryProperties;
+
+        // 从 Ch6-0 开始，把物理设备能力查询升级到 Vulkan 1.1+ 的 *2 结构体系。
+        VkPhysicalDeviceFeatures2 physicalDeviceFeatures;
+        VkPhysicalDeviceVulkan11Features physicalDeviceVulkan11Features;
+        VkPhysicalDeviceVulkan12Features physicalDeviceVulkan12Features;
+        VkPhysicalDeviceVulkan13Features physicalDeviceVulkan13Features;
+        VkPhysicalDeviceProperties2 physicalDeviceProperties;
+        VkPhysicalDeviceVulkan11Properties physicalDeviceVulkan11Properties;
+        VkPhysicalDeviceVulkan12Properties physicalDeviceVulkan12Properties;
+        VkPhysicalDeviceVulkan13Properties physicalDeviceVulkan13Properties;
+        VkPhysicalDeviceMemoryProperties2 physicalDeviceMemoryProperties;
         std::vector<VkPhysicalDevice> availablePhysicalDevices;
 
         uint32_t apiVersion = VK_API_VERSION_1_0;
@@ -413,6 +466,13 @@ namespace vulkan
         VkQueue queue_compute;
         uint32_t currentImageIndex = 0;
         std::vector<const char*> deviceExtensions;
+
+        // 这些指针保存各类 pNext 链的表头，后续可以按功能模块逐个往里挂结构体。
+        void* pNext_instanceCreateInfo = nullptr;
+        void* pNext_deviceCreateInfo = nullptr;
+        void* pNext_physicalDeviceFeatures = nullptr;
+        void* pNext_physicalDeviceProperties = nullptr;
+        void* pNext_physicalDeviceMemoryProperties = nullptr;
 
         //该函数被DeterminePhysicalDevice(...)调用，用于检查物理设备是否满足所需的队列族类型，并将对应的队列族索引返回到queueFamilyIndices，执行成功时直接将索引写入相应成员变量
         result_t GetQueueFamilyIndices(VkPhysicalDevice physicalDevice, bool enableGraphicsQueue,
@@ -475,6 +535,73 @@ namespace vulkan
             return VK_SUCCESS;
         }
 
+        void GetPhysicalDeviceFeatures()
+        {
+            // Vulkan 1.1 及以上优先走 features2 查询链，便于后续挂接更多新特性结构体。
+            if (apiVersion >= VK_API_VERSION_1_1)
+            {
+                physicalDeviceFeatures = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+                physicalDeviceVulkan11Features = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES};
+                physicalDeviceVulkan12Features = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
+                physicalDeviceVulkan13Features = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
+
+                // 只有到了对应 Vulkan 版本，才能把该版本整合出来的特性结构挂进 pNext 链。
+                if (apiVersion >= VK_API_VERSION_1_2)
+                {
+                    physicalDeviceFeatures.pNext = &physicalDeviceVulkan11Features;
+                    physicalDeviceVulkan11Features.pNext = &physicalDeviceVulkan12Features;
+                    if (apiVersion >= VK_API_VERSION_1_3)
+                        physicalDeviceVulkan12Features.pNext = &physicalDeviceVulkan13Features;
+                }
+
+                // 再把用户额外挂进来的查询结构接到这条链的末尾。
+                SetPNext(physicalDeviceFeatures.pNext, pNext_physicalDeviceFeatures);
+                vkGetPhysicalDeviceFeatures2(physicalDevice, &physicalDeviceFeatures);
+            }
+            else
+            {
+                // Vulkan 1.0 只能退回老接口，仍然把结果写进 features2 里的 features 字段。
+                vkGetPhysicalDeviceFeatures(physicalDevice, &physicalDeviceFeatures.features);
+            }
+        }
+
+        void GetPhysicalDeviceProperties()
+        {
+            // 物理设备属性和内存属性也同步升级到 *2 查询体系。
+            if (apiVersion >= VK_API_VERSION_1_1)
+            {
+                physicalDeviceProperties = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+                physicalDeviceVulkan11Properties = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_PROPERTIES};
+                physicalDeviceVulkan12Properties = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES};
+                physicalDeviceVulkan13Properties = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_PROPERTIES};
+
+                // 跟特性查询一样，仅在版本足够高时挂接这些整合结构体。
+                if (apiVersion >= VK_API_VERSION_1_2)
+                {
+                    physicalDeviceProperties.pNext = &physicalDeviceVulkan11Properties;
+                    physicalDeviceVulkan11Properties.pNext = &physicalDeviceVulkan12Properties;
+                    if (apiVersion >= VK_API_VERSION_1_3)
+                        physicalDeviceVulkan12Properties.pNext = &physicalDeviceVulkan13Properties;
+                }
+
+                // 再接上调用方自行追加的属性查询结构体。
+                SetPNext(physicalDeviceProperties.pNext, pNext_physicalDeviceProperties);
+                vkGetPhysicalDeviceProperties2(physicalDevice, &physicalDeviceProperties);
+
+                // 内存属性到 Vulkan 1.3 为止没有对应的 Vulkan11/12/13 整合结构体，因此只需要挂外部扩展链。
+                physicalDeviceMemoryProperties = {
+                    VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2,
+                    pNext_physicalDeviceMemoryProperties};
+                vkGetPhysicalDeviceMemoryProperties2(physicalDevice, &physicalDeviceMemoryProperties);
+            }
+            else
+            {
+                // Vulkan 1.0 继续沿用老接口，把结果写回 *2 结构里的基础字段。
+                vkGetPhysicalDeviceProperties(physicalDevice, &physicalDeviceProperties.properties);
+                vkGetPhysicalDeviceMemoryProperties(physicalDevice, &physicalDeviceMemoryProperties.memoryProperties);
+            }
+        }
+
     public:
         //Getter
         VkPhysicalDevice PhysicalDevice() const
@@ -482,14 +609,49 @@ namespace vulkan
             return physicalDevice;
         }
 
+        const VkPhysicalDeviceFeatures& PhysicalDeviceFeatures() const
+        {
+            return physicalDeviceFeatures.features;
+        }
+
+        const VkPhysicalDeviceVulkan11Features& PhysicalDeviceVulkan11Features() const
+        {
+            return physicalDeviceVulkan11Features;
+        }
+
+        const VkPhysicalDeviceVulkan12Features& PhysicalDeviceVulkan12Features() const
+        {
+            return physicalDeviceVulkan12Features;
+        }
+
+        const VkPhysicalDeviceVulkan13Features& PhysicalDeviceVulkan13Features() const
+        {
+            return physicalDeviceVulkan13Features;
+        }
+
         const VkPhysicalDeviceProperties& PhysicalDeviceProperties() const
         {
-            return physicalDeviceProperties;
+            return physicalDeviceProperties.properties;
+        }
+
+        const VkPhysicalDeviceVulkan11Properties& PhysicalDeviceVulkan11Properties() const
+        {
+            return physicalDeviceVulkan11Properties;
+        }
+
+        const VkPhysicalDeviceVulkan12Properties& PhysicalDeviceVulkan12Properties() const
+        {
+            return physicalDeviceVulkan12Properties;
+        }
+
+        const VkPhysicalDeviceVulkan13Properties& PhysicalDeviceVulkan13Properties() const
+        {
+            return physicalDeviceVulkan13Properties;
         }
 
         const VkPhysicalDeviceMemoryProperties& PhysicalDeviceMemoryProperties() const
         {
-            return physicalDeviceMemoryProperties;
+            return physicalDeviceMemoryProperties.memoryProperties;
         }
 
         VkPhysicalDevice AvailablePhysicalDevice(uint32_t index) const
@@ -546,6 +708,30 @@ namespace vulkan
         void AddDeviceExtension(const char* extensionName)
         {
             AddLayerOrExtension(deviceExtensions, extensionName);
+        }
+
+        void AddNextStructure_DeviceCreateInfo(auto& next, bool allowDuplicate = false)
+        {
+            // 允许调用方把额外设备创建结构体挂进 VkDeviceCreateInfo::pNext。
+            SetPNext(pNext_deviceCreateInfo, &next, allowDuplicate);
+        }
+
+        void AddNextStructure_PhysicalDeviceFeatures(auto& next, bool allowDuplicate = false)
+        {
+            // 允许追加更多物理设备特性查询结构体。
+            SetPNext(pNext_physicalDeviceFeatures, &next, allowDuplicate);
+        }
+
+        void AddNextStructure_PhysicalDeviceProperties(auto& next, bool allowDuplicate = false)
+        {
+            // 允许追加更多物理设备属性查询结构体。
+            SetPNext(pNext_physicalDeviceProperties, &next, allowDuplicate);
+        }
+
+        void AddNextStructure_PhysicalDeviceMemoryProperties(auto& next, bool allowDuplicate = false)
+        {
+            // 允许追加更多物理设备内存属性查询结构体。
+            SetPNext(pNext_physicalDeviceMemoryProperties, &next, allowDuplicate);
         }
 
         //该函数用于获取物理设备
@@ -657,34 +843,50 @@ namespace vulkan
                 queueFamilyIndex_compute != queueFamilyIndex_graphics &&
                 queueFamilyIndex_compute != queueFamilyIndex_presentation)
                 queueCreateInfos[queueCreateInfoCount++].queueFamilyIndex = queueFamilyIndex_compute;
-            VkPhysicalDeviceFeatures physicalDeviceFeatures;
-            vkGetPhysicalDeviceFeatures(physicalDevice, &physicalDeviceFeatures);
+            // 创建设备前，先把当前物理设备的特性链准备好。
+            GetPhysicalDeviceFeatures();
             VkDeviceCreateInfo deviceCreateInfo = {
                 .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
                 .flags = flags,
                 .queueCreateInfoCount = queueCreateInfoCount,
                 .pQueueCreateInfos = queueCreateInfos,
                 .enabledExtensionCount = uint32_t(deviceExtensions.size()),
-                .ppEnabledExtensionNames = deviceExtensions.data(),
-                .pEnabledFeatures = &physicalDeviceFeatures
+                .ppEnabledExtensionNames = deviceExtensions.data()
             };
+
+            // Vulkan 1.1+ 推荐通过 pNext 传 VkPhysicalDeviceFeatures2；1.0 继续用旧字段。
+            void** ppNext = nullptr;
+            if (apiVersion >= VK_API_VERSION_1_1)
+                ppNext = SetPNext(pNext_deviceCreateInfo, &physicalDeviceFeatures);
+            else
+                deviceCreateInfo.pEnabledFeatures = &physicalDeviceFeatures.features;
+
+            deviceCreateInfo.pNext = pNext_deviceCreateInfo;
             if (VkResult result = vkCreateDevice(physicalDevice, &deviceCreateInfo, nullptr, &device))
             {
+                // 若临时把 features2 挂进了设备创建链，这里需要及时摘掉。
+                if (ppNext)
+                    *ppNext = nullptr;
                 outStream << std::format("[ graphicsBase ] ERROR\nFailed to create a vulkan logical device!\nError code: {}\n", int32_t(result));
                 return result;
             }
+
+            // 创建设备成功后同样恢复链表原状，便于后续继续复用 pNext_deviceCreateInfo。
+            if (ppNext)
+                *ppNext = nullptr;
             if (queueFamilyIndex_graphics != VK_QUEUE_FAMILY_IGNORED)
                 vkGetDeviceQueue(device, queueFamilyIndex_graphics, 0, &queue_graphics);
             if (queueFamilyIndex_presentation != VK_QUEUE_FAMILY_IGNORED)
                 vkGetDeviceQueue(device, queueFamilyIndex_presentation, 0, &queue_presentation);
             if (queueFamilyIndex_compute != VK_QUEUE_FAMILY_IGNORED)
                 vkGetDeviceQueue(device, queueFamilyIndex_compute, 0, &queue_compute);
-            vkGetPhysicalDeviceProperties(physicalDevice, &physicalDeviceProperties);
-            vkGetPhysicalDeviceMemoryProperties(physicalDevice, &physicalDeviceMemoryProperties);
+            // 设备创建完成后，再统一拉取物理设备属性链和内存属性链。
+            GetPhysicalDeviceProperties();
             //输出所用的物理设备名称
-            outStream << std::format("Renderer: {}\n", physicalDeviceProperties.deviceName);
-            //for (auto& i : callbacks_createDevice)
-            //  i();
+            outStream << std::format("Renderer: {}\n", physicalDeviceProperties.properties.deviceName);
+            // 设备创建成功后，通知依赖逻辑设备的上层封装初始化自己。
+            for (auto& i : callbacks_createDevice)
+                i();
             return VK_SUCCESS;
         }
 
@@ -730,6 +932,12 @@ namespace vulkan
         void DeviceExtensions(const std::vector<const char*>& extensionNames)
         {
             deviceExtensions = extensionNames;
+        }
+
+        void AddNextStructure_SwapchainCreateInfo(auto& next, bool allowDuplicate = false)
+        {
+            // 交换链创建信息会被缓存并复用，因此直接往 swapchainCreateInfo.pNext 链追加即可。
+            SetPNext(const_cast<void*&>(swapchainCreateInfo.pNext), &next, allowDuplicate);
         }
 
     private:
