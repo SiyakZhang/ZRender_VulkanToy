@@ -5,67 +5,70 @@
 
 using namespace vulkan;
 
-// 三角形示例使用的管线布局。
+// 这一章继续沿用前面几章已经搭好的三角形示例。
+// 这里先保留原来的“几何着色器版本”内容，只把帧缓冲相关流程切换到 imageless framebuffer。
 pipelineLayout pipelineLayout_triangle;
 
-// 三角形示例使用的图形管线。
+// 图形管线同样沿用前面的封装对象。
 pipeline pipeline_triangle;
 
-const easyVulkan::renderPassWithFramebuffers& RenderPassAndFramebuffers()
+const easyVulkan::renderPassWithFramebuffer& RenderPassAndFramebuffers()
 {
-    // 用一个静态引用统一拿到屏幕渲染通道与帧缓冲集合。
-    static const auto& rpwf = easyVulkan::CreateRpwf_Screen();
+    // 改为返回“单个渲染通道 + 单个无图像帧缓冲”的组合。
+    static const auto& rpwf = easyVulkan::CreateRpwf_Screen_ImagelessFramebuffer();
     return rpwf;
 }
 
 void CreateLayout()
 {
-    // 本节还没有描述符和 push constant，所以直接创建一个“空管线布局”即可。
+    // 本节依然没有描述符集和 push constant，
+    // 所以继续创建一个空的管线布局即可。
     pipelineLayout_triangle.Create();
 }
 
 void CreatePipeline()
 {
-    // 几何着色器属于可选设备特性，先确认当前物理设备是否支持。
+    // 几何着色器仍然属于可选特性，所以先检查当前 GPU 是否支持。
     VkPhysicalDeviceFeatures physicalDeviceFeatures{};
     vkGetPhysicalDeviceFeatures(graphicsBase::Base().PhysicalDevice(), &physicalDeviceFeatures);
 
-    // 如果不支持几何着色器，这一课对应的示例就无法继续运行。
+    // 若设备不支持几何着色器，这个示例就无法继续运行。
     if (!physicalDeviceFeatures.geometryShader)
     {
         outStream << "[ main ] ERROR\nCurrent GPU does not support geometry shader feature.\n";
         abort();
     }
 
-    // 顶点着色器的 SPIR-V 模组会在这里被读入并创建成 VkShaderModule。
+    // 顶点着色器模块。
     static shaderModule vert("shader/FirstTriangle.vert.spv");
 
-    // 几何着色器位于顶点着色器之后、片段着色器之前，用来基于输入图元继续生成新图元。
+    // 几何着色器模块。
     static shaderModule geom("shader/FirstTriangle.geom.spv");
 
-    // 片段着色器的 SPIR-V 模组同理，会在创建管线阶段作为另一个着色器阶段使用。
+    // 片段着色器模块。
     static shaderModule frag("shader/FirstTriangle.frag.spv");
 
-    // 这里组装的是“管线着色器阶段创建信息”，它引用前面创建好的 shaderModule。
+    // 当前图形管线由顶点、几何、片段三个阶段组成。
     static VkPipelineShaderStageCreateInfo shaderStageCreateInfos_triangle[3] = {
         vert.StageCreateInfo(VK_SHADER_STAGE_VERTEX_BIT),
         geom.StageCreateInfo(VK_SHADER_STAGE_GEOMETRY_BIT),
         frag.StageCreateInfo(VK_SHADER_STAGE_FRAGMENT_BIT)};
 
     auto Create = [] {
-        // 先创建一个“图形管线创建信息包”，里面把常见状态都整理好了。
+        // 继续使用教程前面封装好的图形管线创建信息打包器。
         graphicsPipelineCreateInfoPack pipelineCiPack;
 
-        // 当前管线使用上面创建的空布局。
+        // 指定这条管线使用的管线布局。
         pipelineCiPack.SetPipelineLayout(pipelineLayout_triangle);
 
-        // 当前管线要在屏幕渲染通道里执行。
+        // 指定这条管线对应的 render pass。
+        // 即使 framebuffer 变成 imageless，管线依然需要绑定具体的 render pass 兼容信息。
         pipelineCiPack.SetRenderPass(RenderPassAndFramebuffers().renderPass);
 
-        // 三个顶点按三角形列表解释。
+        // 输入图元仍然解释为三角形列表。
         pipelineCiPack.inputAssemblyStateCi.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 
-        // 视口直接覆盖整个交换链图像范围。
+        // 视口覆盖整个交换链图像。
         pipelineCiPack.viewports.emplace_back(
             0.0f,
             0.0f,
@@ -77,31 +80,31 @@ void CreatePipeline()
         // 裁剪矩形同样覆盖整个窗口。
         pipelineCiPack.scissors.emplace_back(VkOffset2D{}, windowSize);
 
-        // 当前示例不开启多重采样。
+        // 本节依旧不开启多重采样。
         pipelineCiPack.multisampleStateCi.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
 
-        // 颜色附件把 RGBA 四个分量都写出去。
+        // 颜色附件照常写出 RGBA 四个分量。
         pipelineCiPack.colorBlendAttachmentStates.push_back({.colorWriteMask = 0b1111});
 
-        // 把各 vector 里的状态数量和地址同步回原生 Vulkan 结构体。
+        // 同步内部数组指针与数量。
         pipelineCiPack.UpdateAllArrays();
 
-        // 当前管线现在包含顶点、几何、片段三个阶段。
+        // 把三段着色器阶段信息挂进去。
         pipelineCiPack.SetShaderStages(shaderStageCreateInfos_triangle);
 
-        // 真正创建 Vulkan 图形管线。
+        // 创建真正的 Vulkan 图形管线。
         pipeline_triangle.Create(pipelineCiPack);
     };
 
     auto Destroy = [] {
-        // 交换链重建前先主动析构旧管线，避免继续引用旧视口和旧渲染目标。
+        // 交换链重建前先销毁旧管线，避免持有旧尺寸相关状态。
         pipeline_triangle.~pipeline();
     };
 
-    // 交换链重建后需要重新创建依赖交换链尺寸的图形管线。
+    // 交换链重建后重新创建图形管线。
     graphicsBase::Base().AddCallback_CreateSwapchain(Create);
 
-    // 交换链销毁前要先销毁旧图形管线。
+    // 交换链销毁前销毁旧管线。
     graphicsBase::Base().AddCallback_DestroySwapchain(Destroy);
 
     // 首次启动时先创建一次。
@@ -110,20 +113,50 @@ void CreatePipeline()
 
 int main()
 {
-    // 先完成窗口、实例、设备与交换链初始化。
-    if (!InitializeWindow(defaultWindowSize))
+    // 这一章需要 imageless framebuffer。
+    // Vulkan 1.2 起它已经进入核心；在 Vulkan 1.1 上则需要额外启用扩展和特性结构体。
+    graphicsBase::Base().UseLatestApiVersion();
+
+    // Vulkan 1.0 没有这一套能力，直接结束即可。
+    if (graphicsBase::Base().ApiVersion() < VK_API_VERSION_1_1)
         return -1;
 
-    // 拿到屏幕渲染通道和与交换链图像配套的帧缓冲。
-    const auto& [renderPass, framebuffers] = RenderPassAndFramebuffers();
+    if (graphicsBase::Base().ApiVersion() < VK_API_VERSION_1_2)
+    {
+        // Vulkan 1.1 路径下需要手动启用两个相关扩展。
+        graphicsBase::Base().AddDeviceExtension(VK_KHR_IMAGE_FORMAT_LIST_EXTENSION_NAME);
+        graphicsBase::Base().AddDeviceExtension(VK_KHR_IMAGELESS_FRAMEBUFFER_EXTENSION_NAME);
+
+        // 这个特性结构体会通过 Ch6-0 新加好的 pNext 接口挂到 features 链上。
+        VkPhysicalDeviceImagelessFramebufferFeatures physicalDeviceImagelessFramebufferFeatures = {
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGELESS_FRAMEBUFFER_FEATURES,
+        };
+        graphicsBase::Base().AddNextStructure_PhysicalDeviceFeatures(physicalDeviceImagelessFramebufferFeatures);
+
+        // 初始化窗口、实例、设备和交换链。
+        // 初始化完成后，再检查驱动是否真的把 imagelessFramebuffer 特性打开了。
+        if (!InitializeWindow(defaultWindowSize) ||
+            !physicalDeviceImagelessFramebufferFeatures.imagelessFramebuffer)
+            return -1;
+    }
+    else
+    {
+        // Vulkan 1.2 及以上直接从核心特性结构里读取 imagelessFramebuffer 即可。
+        if (!InitializeWindow(defaultWindowSize) ||
+            !graphicsBase::Base().PhysicalDeviceVulkan12Features().imagelessFramebuffer)
+            return -1;
+    }
+
+    // 拿到屏幕渲染通道，以及唯一那一个 imageless framebuffer。
+    const auto& [renderPass, framebuffer] = RenderPassAndFramebuffers();
 
     // 创建管线布局。
     CreateLayout();
 
-    // 创建三角形图形管线。
+    // 创建图形管线。
     CreatePipeline();
 
-    // 先创建一个“初始为已完成状态”的栅栏，保证第一帧不用卡在等待上。
+    // 继续使用“初始为已完成”的栅栏，保证第一帧不会在等待上卡住。
     fence fence(VK_FENCE_CREATE_SIGNALED_BIT);
 
     // 获取交换链图像成功后，呈现引擎会置位这个信号量。
@@ -135,59 +168,77 @@ int main()
     // 本节仍然只使用一个主命令缓冲区。
     commandBuffer commandBuffer;
 
-    // 命令池从图形队列族分配命令缓冲区，并允许逐帧重录。
+    // 命令池来自图形队列族，并允许逐帧 reset 命令缓冲区。
     commandPool commandPool(
         graphicsBase::Base().QueueFamilyIndex_Graphics(),
         VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT);
 
-    // 真正向命令池申请一个命令缓冲区对象。
+    // 申请一个主命令缓冲区对象。
     commandPool.AllocateBuffers(commandBuffer);
 
-    // 清屏颜色继续保留为红色，这样三角形会画在醒目的背景上。
+    // 继续把清屏颜色设成红色。
     VkClearValue clearColor = {.color = {1.0f, 0.0f, 0.0f, 1.0f}};
 
     while (!glfwWindowShouldClose(pWindow))
     {
-        // 如果窗口被最小化，就先阻塞等待窗口恢复，避免无意义地继续渲染。
+        // 如果窗口被最小化，就先等待窗口恢复，避免无意义地持续渲染。
         while (glfwGetWindowAttrib(pWindow, GLFW_ICONIFIED))
             glfwWaitEvents();
 
-        // 等上一帧的 GPU 工作执行完，并顺手把栅栏复位成未完成状态。
+        // 等待上一帧的 GPU 工作完成，并把栅栏复位。
         fence.WaitAndReset();
 
-        // 从交换链中取出当前这一帧要渲染的图像。
+        // 从交换链里取出当前这一帧要渲染的图像。
         graphicsBase::Base().SwapImage(semaphore_imageIsAvailable);
 
-        // 记住当前取到的是第几张交换链图像，后面要用它选择对应帧缓冲。
-        const auto i = graphicsBase::Base().CurrentImageIndex();
+        // 记录当前交换链图像的索引。
+        const uint32_t i = graphicsBase::Base().CurrentImageIndex();
 
-        // 开始录制这一帧的命令缓冲区；逐帧重录的主命令缓冲区最适合 one-time submit。
+        // 开始录制这一帧的主命令缓冲区。
         commandBuffer.BeginOneTime();
 
-        // 进入渲染通道，并把当前帧缓冲清成红色。
-        renderPass.CmdBegin(commandBuffer, framebuffers[i], {{}, windowSize}, clearColor);
+        // imageless framebuffer 不在创建时绑定附件，
+        // 所以这里要把“当前这张 swapchain image view”临时挂进 VkRenderPassBeginInfo 的 pNext 链上。
+        VkImageView attachment = graphicsBase::Base().SwapchainImageView(i);
 
-        // 绑定本节创建好的图形管线。
+        // 这个结构专门用来在开始 render pass 时补充真正的附件视图。
+        VkRenderPassAttachmentBeginInfo renderPassAttachmentBeginInfo = {
+            .sType = VK_STRUCTURE_TYPE_RENDER_PASS_ATTACHMENT_BEGIN_INFO,
+            .attachmentCount = 1,
+            .pAttachments = &attachment};
+
+        // 这里的 framebuffer 不再区分第几张交换链图像，
+        // 因为所有图像共用同一个 imageless framebuffer。
+        VkRenderPassBeginInfo renderPassBeginInfo = {
+            .pNext = &renderPassAttachmentBeginInfo,
+            .framebuffer = framebuffer,
+            .renderArea = {{}, windowSize},
+            .clearValueCount = 1,
+            .pClearValues = &clearColor};
+
+        // 开始渲染通道。
+        renderPass.CmdBegin(commandBuffer, renderPassBeginInfo);
+
+        // 绑定这一章使用的图形管线。
         pipeline_triangle.CmdBind(commandBuffer);
 
-        // CPU 侧仍然只提交 3 个顶点，先生成一个输入三角形。
-        // 几何着色器会在这个基础上额外再生成一个更小的内层三角形。
+        // 继续提交 3 个顶点，交给顶点着色器和几何着色器去生成图元。
         vkCmdDraw(commandBuffer, 3, 1, 0, 0);
 
-        // 结束当前渲染通道。
+        // 结束渲染通道。
         renderPass.CmdEnd(commandBuffer);
 
-        // 结束命令录制，准备提交给图形队列。
+        // 结束命令录制。
         commandBuffer.End();
 
-        // 提交命令时等待“图像可用”信号量，完成后发出“渲染结束”信号量并置位栅栏。
+        // 提交命令时等待“图像可用”信号量，完成后发出“渲染结束”信号量，并关联栅栏。
         graphicsBase::Base().SubmitCommandBuffer_Graphics(
             commandBuffer,
             semaphore_imageIsAvailable,
             semaphore_renderingIsOver,
             fence);
 
-        // 呈现阶段等待“渲染结束”信号量，确保不会显示尚未完成的图像。
+        // 呈现阶段等待“渲染结束”信号量，确保展示的是已经写好的图像。
         graphicsBase::Base().PresentImage(semaphore_renderingIsOver);
 
         // 处理窗口事件。
@@ -197,7 +248,7 @@ int main()
         TitleFps();
     }
 
-    // 退出前统一释放窗口与 Vulkan 资源。
+    // 退出前统一释放窗口和 Vulkan 资源。
     TerminateWindow();
     return 0;
 }
