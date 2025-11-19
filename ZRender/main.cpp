@@ -1,23 +1,19 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include "GlfwGeneral.hpp"
-#include "RPFB_Screen.hpp"
 #include "VKBase+.h"
 
 using namespace vulkan;
 
-// 这一章继续沿用前面几章已经搭好的三角形示例。
-// 这里先保留原来的“几何着色器版本”内容，只把帧缓冲相关流程切换到 imageless framebuffer。
+// 动态渲染这一章不再依赖 render pass 和 framebuffer，
+// 但窗口尺寸仍然要反复拿来配置视口、裁剪区域和渲染区域。
+const VkExtent2D& windowSize = graphicsBase::Base().SwapchainCreateInfo().imageExtent;
+
+// 继续沿用前面几章已经搭好的三角形示例。
+// 这里只把“如何开始一段渲染”切换到 dynamic rendering。
 pipelineLayout pipelineLayout_triangle;
 
-// 图形管线同样沿用前面的封装对象。
+// 图形管线对象继续复用既有封装。
 pipeline pipeline_triangle;
-
-const easyVulkan::renderPassWithFramebuffer& RenderPassAndFramebuffers()
-{
-    // 改为返回“单个渲染通道 + 单个无图像帧缓冲”的组合。
-    static const auto& rpwf = easyVulkan::CreateRpwf_Screen_ImagelessFramebuffer();
-    return rpwf;
-}
 
 void CreateLayout()
 {
@@ -28,11 +24,12 @@ void CreateLayout()
 
 void CreatePipeline()
 {
-    // 几何着色器仍然属于可选特性，所以先检查当前 GPU 是否支持。
+    // 这里仍然保留上一章的几何着色器示例内容，
+    // 因此先检查 GPU 是否支持 geometry shader。
     VkPhysicalDeviceFeatures physicalDeviceFeatures{};
     vkGetPhysicalDeviceFeatures(graphicsBase::Base().PhysicalDevice(), &physicalDeviceFeatures);
 
-    // 若设备不支持几何着色器，这个示例就无法继续运行。
+    // 若不支持几何着色器，这个示例就无法继续运行。
     if (!physicalDeviceFeatures.geometryShader)
     {
         outStream << "[ main ] ERROR\nCurrent GPU does not support geometry shader feature.\n";
@@ -48,22 +45,30 @@ void CreatePipeline()
     // 片段着色器模块。
     static shaderModule frag("shader/FirstTriangle.frag.spv");
 
-    // 当前图形管线由顶点、几何、片段三个阶段组成。
+    // 当前图形管线仍然由顶点、几何、片段三个阶段组成。
     static VkPipelineShaderStageCreateInfo shaderStageCreateInfos_triangle[3] = {
         vert.StageCreateInfo(VK_SHADER_STAGE_VERTEX_BIT),
         geom.StageCreateInfo(VK_SHADER_STAGE_GEOMETRY_BIT),
         frag.StageCreateInfo(VK_SHADER_STAGE_FRAGMENT_BIT)};
 
     auto Create = [] {
-        // 继续使用教程前面封装好的图形管线创建信息打包器。
+        // 动态渲染路径下，图形管线不再绑定 render pass，
+        // 改为通过 VkPipelineRenderingCreateInfo 描述未来会输出到哪些附件格式。
+        const VkFormat colorAttachmentFormat = graphicsBase::Base().SwapchainCreateInfo().imageFormat;
+
+        VkPipelineRenderingCreateInfo pipelineRenderingCreateInfo = {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
+            .colorAttachmentCount = 1,
+            .pColorAttachmentFormats = &colorAttachmentFormat};
+
+        // 继续使用现有的图形管线创建信息打包器。
         graphicsPipelineCreateInfoPack pipelineCiPack;
 
-        // 指定这条管线使用的管线布局。
-        pipelineCiPack.SetPipelineLayout(pipelineLayout_triangle);
+        // 把动态渲染专用的创建信息挂到图形管线创建结构的 pNext 链上。
+        pipelineCiPack.createInfo.pNext = &pipelineRenderingCreateInfo;
 
-        // 指定这条管线对应的 render pass。
-        // 即使 framebuffer 变成 imageless，管线依然需要绑定具体的 render pass 兼容信息。
-        pipelineCiPack.SetRenderPass(RenderPassAndFramebuffers().renderPass);
+        // 指定管线布局。
+        pipelineCiPack.SetPipelineLayout(pipelineLayout_triangle);
 
         // 输入图元仍然解释为三角形列表。
         pipelineCiPack.inputAssemblyStateCi.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
@@ -83,7 +88,7 @@ void CreatePipeline()
         // 本节依旧不开启多重采样。
         pipelineCiPack.multisampleStateCi.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
 
-        // 颜色附件照常写出 RGBA 四个分量。
+        // 颜色附件继续写出 RGBA 四个分量。
         pipelineCiPack.colorBlendAttachmentStates.push_back({.colorWriteMask = 0b1111});
 
         // 同步内部数组指针与数量。
@@ -97,14 +102,14 @@ void CreatePipeline()
     };
 
     auto Destroy = [] {
-        // 交换链重建前先销毁旧管线，避免持有旧尺寸相关状态。
+        // 交换链重建前先销毁旧管线，避免持有旧尺寸和旧格式对应的状态。
         pipeline_triangle.~pipeline();
     };
 
     // 交换链重建后重新创建图形管线。
     graphicsBase::Base().AddCallback_CreateSwapchain(Create);
 
-    // 交换链销毁前销毁旧管线。
+    // 交换链销毁前销毁旧图形管线。
     graphicsBase::Base().AddCallback_DestroySwapchain(Destroy);
 
     // 首次启动时先创建一次。
@@ -113,42 +118,52 @@ void CreatePipeline()
 
 int main()
 {
-    // 这一章需要 imageless framebuffer。
-    // Vulkan 1.2 起它已经进入核心；在 Vulkan 1.1 上则需要额外启用扩展和特性结构体。
+    // Vulkan 1.3 已把 dynamic rendering 纳入核心。
+    // 若只支持 Vulkan 1.2，则仍然可以通过 VK_KHR_dynamic_rendering 扩展来使用。
+    PFN_vkCmdBeginRenderingKHR vkCmdBeginRendering = ::vkCmdBeginRendering;
+    PFN_vkCmdEndRenderingKHR vkCmdEndRendering = ::vkCmdEndRendering;
+
+    // 先把 API 版本提升到驱动可支持的最高版本。
     graphicsBase::Base().UseLatestApiVersion();
 
-    // Vulkan 1.0 没有这一套能力，直接结束即可。
-    if (graphicsBase::Base().ApiVersion() < VK_API_VERSION_1_1)
+    // Vulkan 1.1 及以下不具备这一章需要的基础能力。
+    if (graphicsBase::Base().ApiVersion() < VK_API_VERSION_1_2)
         return -1;
 
-    if (graphicsBase::Base().ApiVersion() < VK_API_VERSION_1_2)
+    if (graphicsBase::Base().ApiVersion() < VK_API_VERSION_1_3)
     {
-        // Vulkan 1.1 路径下需要手动启用两个相关扩展。
-        graphicsBase::Base().AddDeviceExtension(VK_KHR_IMAGE_FORMAT_LIST_EXTENSION_NAME);
-        graphicsBase::Base().AddDeviceExtension(VK_KHR_IMAGELESS_FRAMEBUFFER_EXTENSION_NAME);
+        // Vulkan 1.2 路径下，需要手动启用动态渲染扩展。
+        graphicsBase::Base().AddDeviceExtension(VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME);
 
-        // 这个特性结构体会通过 Ch6-0 新加好的 pNext 接口挂到 features 链上。
-        VkPhysicalDeviceImagelessFramebufferFeatures physicalDeviceImagelessFramebufferFeatures = {
-            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGELESS_FRAMEBUFFER_FEATURES,
+        // 再通过 pNext 链显式请求 dynamicRendering 特性。
+        VkPhysicalDeviceDynamicRenderingFeatures physicalDeviceDynamicRenderingFeatures = {
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES,
         };
-        graphicsBase::Base().AddNextStructure_PhysicalDeviceFeatures(physicalDeviceImagelessFramebufferFeatures);
+        graphicsBase::Base().AddNextStructure_PhysicalDeviceFeatures(physicalDeviceDynamicRenderingFeatures);
 
         // 初始化窗口、实例、设备和交换链。
-        // 初始化完成后，再检查驱动是否真的把 imagelessFramebuffer 特性打开了。
+        // 初始化成功后，还要确认驱动确实开启了 dynamicRendering。
         if (!InitializeWindow(defaultWindowSize) ||
-            !physicalDeviceImagelessFramebufferFeatures.imagelessFramebuffer)
+            !physicalDeviceDynamicRenderingFeatures.dynamicRendering)
+            return -1;
+
+        // Vulkan 1.2 扩展路径下，命令入口点需要在创建设备后手动查询。
+        vkCmdBeginRendering = reinterpret_cast<PFN_vkCmdBeginRenderingKHR>(
+            vkGetDeviceProcAddr(graphicsBase::Base().Device(), "vkCmdBeginRenderingKHR"));
+        vkCmdEndRendering = reinterpret_cast<PFN_vkCmdEndRenderingKHR>(
+            vkGetDeviceProcAddr(graphicsBase::Base().Device(), "vkCmdEndRenderingKHR"));
+
+        // 如果函数指针没取到，就没法继续录制动态渲染命令。
+        if (!vkCmdBeginRendering || !vkCmdEndRendering)
             return -1;
     }
     else
     {
-        // Vulkan 1.2 及以上直接从核心特性结构里读取 imagelessFramebuffer 即可。
+        // Vulkan 1.3 及以上可以直接从核心特性结构里检查 dynamicRendering。
         if (!InitializeWindow(defaultWindowSize) ||
-            !graphicsBase::Base().PhysicalDeviceVulkan12Features().imagelessFramebuffer)
+            !graphicsBase::Base().PhysicalDeviceVulkan13Features().dynamicRendering)
             return -1;
     }
-
-    // 拿到屏幕渲染通道，以及唯一那一个 imageless framebuffer。
-    const auto& [renderPass, framebuffer] = RenderPassAndFramebuffers();
 
     // 创建管线布局。
     CreateLayout();
@@ -156,7 +171,7 @@ int main()
     // 创建图形管线。
     CreatePipeline();
 
-    // 继续使用“初始为已完成”的栅栏，保证第一帧不会在等待上卡住。
+    // 继续使用“初始为已完成”的栅栏，保证第一帧不会卡在等待上。
     fence fence(VK_FENCE_CREATE_SIGNALED_BIT);
 
     // 获取交换链图像成功后，呈现引擎会置位这个信号量。
@@ -185,39 +200,58 @@ int main()
         while (glfwGetWindowAttrib(pWindow, GLFW_ICONIFIED))
             glfwWaitEvents();
 
-        // 等待上一帧的 GPU 工作完成，并把栅栏复位。
+        // 等待上一帧 GPU 工作结束，并把栅栏复位。
         fence.WaitAndReset();
 
         // 从交换链里取出当前这一帧要渲染的图像。
         graphicsBase::Base().SwapImage(semaphore_imageIsAvailable);
 
-        // 记录当前交换链图像的索引。
+        // 记住当前交换链图像的索引。
         const uint32_t i = graphicsBase::Base().CurrentImageIndex();
 
         // 开始录制这一帧的主命令缓冲区。
         commandBuffer.BeginOneTime();
 
-        // imageless framebuffer 不在创建时绑定附件，
-        // 所以这里要把“当前这张 swapchain image view”临时挂进 VkRenderPassBeginInfo 的 pNext 链上。
-        VkImageView attachment = graphicsBase::Base().SwapchainImageView(i);
+        // 动态渲染不会帮我们隐式完成 render pass 那套布局转换，
+        // 所以在真正开始渲染前，要手动把交换链图像切到颜色附件布局。
+        VkImageMemoryBarrier imageMemoryBarrier = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+            .newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = graphicsBase::Base().SwapchainImage(i),
+            .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
 
-        // 这个结构专门用来在开始 render pass 时补充真正的附件视图。
-        VkRenderPassAttachmentBeginInfo renderPassAttachmentBeginInfo = {
-            .sType = VK_STRUCTURE_TYPE_RENDER_PASS_ATTACHMENT_BEGIN_INFO,
-            .attachmentCount = 1,
-            .pAttachments = &attachment};
+        // 由于本帧会直接清屏重写整张图像，所以 oldLayout 保持默认的 UNDEFINED 也没问题。
+        vkCmdPipelineBarrier(
+            commandBuffer,
+            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+            VK_DEPENDENCY_BY_REGION_BIT,
+            0, nullptr,
+            0, nullptr,
+            1, &imageMemoryBarrier);
 
-        // 这里的 framebuffer 不再区分第几张交换链图像，
-        // 因为所有图像共用同一个 imageless framebuffer。
-        VkRenderPassBeginInfo renderPassBeginInfo = {
-            .pNext = &renderPassAttachmentBeginInfo,
-            .framebuffer = framebuffer,
+        // 动态渲染开始前，需要把颜色附件的信息打包到 VkRenderingAttachmentInfo 里。
+        VkRenderingAttachmentInfo colorAttachmentInfo = {
+            .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+            .imageView = graphicsBase::Base().SwapchainImageView(i),
+            .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+            .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+            .clearValue = clearColor};
+
+        // 再用 VkRenderingInfo 描述这次渲染区域、层数以及附件数组。
+        VkRenderingInfo renderingInfo = {
+            .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
             .renderArea = {{}, windowSize},
-            .clearValueCount = 1,
-            .pClearValues = &clearColor};
+            .layerCount = 1,
+            .colorAttachmentCount = 1,
+            .pColorAttachments = &colorAttachmentInfo};
 
-        // 开始渲染通道。
-        renderPass.CmdBegin(commandBuffer, renderPassBeginInfo);
+        // 开始动态渲染。
+        vkCmdBeginRendering(commandBuffer, &renderingInfo);
 
         // 绑定这一章使用的图形管线。
         pipeline_triangle.CmdBind(commandBuffer);
@@ -225,8 +259,23 @@ int main()
         // 继续提交 3 个顶点，交给顶点着色器和几何着色器去生成图元。
         vkCmdDraw(commandBuffer, 3, 1, 0, 0);
 
-        // 结束渲染通道。
-        renderPass.CmdEnd(commandBuffer);
+        // 结束动态渲染。
+        vkCmdEndRendering(commandBuffer);
+
+        // 渲染结束后，还要把图像布局切回 PRESENT_SRC_KHR，方便后面的呈现队列使用。
+        imageMemoryBarrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        imageMemoryBarrier.dstAccessMask = 0;
+        imageMemoryBarrier.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        imageMemoryBarrier.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+
+        vkCmdPipelineBarrier(
+            commandBuffer,
+            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+            VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+            VK_DEPENDENCY_BY_REGION_BIT,
+            0, nullptr,
+            0, nullptr,
+            1, &imageMemoryBarrier);
 
         // 结束命令录制。
         commandBuffer.End();
