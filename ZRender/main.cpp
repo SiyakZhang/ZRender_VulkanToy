@@ -5,26 +5,25 @@
 
 using namespace vulkan;
 
-// 顶点结构现在不再只存在于着色器里，
-// CPU 侧也要有一份一模一样的布局描述，才能正确把顶点数据塞进顶点缓冲区。
+// CPU 侧顶点结构必须与顶点着色器声明的输入布局一一对应。
 struct vertex
 {
-    // 二维位置，后面会对应到顶点着色器里的 location 0。
+    // 顶点位置，对应 location 0。
     glm::vec2 position;
 
-    // 顶点颜色，后面会对应到顶点着色器里的 location 1。
+    // 顶点颜色，对应 location 1。
     glm::vec4 color;
 };
 
 // 三角形示例使用的管线布局。
 pipelineLayout pipelineLayout_triangle;
 
-// 三角形示例使用的图形管线。
+// 图形管线对象。
 pipeline pipeline_triangle;
 
 const easyVulkan::renderPassWithFramebuffers& RenderPassAndFramebuffers()
 {
-    // 这一章重新回到传统 render pass + framebuffer 的绘制路径。
+    // 这一章继续沿用传统 render pass + framebuffer 路径。
     static const auto& rpwf = easyVulkan::CreateRpwf_Screen();
     return rpwf;
 }
@@ -37,10 +36,10 @@ void CreateLayout()
 
 void CreatePipeline()
 {
-    // 这一章改用“从顶点缓冲区读取颜色”的着色器。
+    // 继续复用上一节的顶点缓冲区着色器。
     static shaderModule vert("shader/VertexBuffer.vert.spv");
 
-    // 片段着色器依旧负责把插值后的颜色写到颜色附件。
+    // 片段着色器也保持不变。
     static shaderModule frag("shader/VertexBuffer.frag.spv");
 
     // 当前图形管线由顶点和片段两个阶段组成。
@@ -58,8 +57,7 @@ void CreatePipeline()
         // 指定这条管线要在屏幕 render pass 中执行。
         pipelineCiPack.SetRenderPass(RenderPassAndFramebuffers().renderPass);
 
-        // 下面开始描述“顶点缓冲区里的每一条顶点记录长什么样”。
-        // binding 0 表示后面 vkCmdBindVertexBuffers 绑定到槽位 0 的缓冲区。
+        // binding 0 对应后面绑定到槽位 0 的顶点缓冲区。
         pipelineCiPack.vertexInputBindings.emplace_back(0, sizeof(vertex), VK_VERTEX_INPUT_RATE_VERTEX);
 
         // location 0 对应顶点结构里的 position。
@@ -157,18 +155,27 @@ int main()
     // 申请一个主命令缓冲区对象。
     commandPool.AllocateBuffers(commandBuffer);
 
-    // 先在 CPU 侧准备三个顶点。
-    // 每个顶点都包含位置和颜色，后面会整块拷贝进 GPU 顶点缓冲区。
+    // 先在 CPU 侧准备四个顶点。
+    // 这四个顶点会组成一个长方形的四个角。
     const vertex vertices[] = {
-        {{0.0f, -0.5f}, {1.0f, 0.0f, 0.0f, 1.0f}},
+        {{-0.5f, -0.5f}, {1.0f, 1.0f, 0.0f, 1.0f}},
+        {{0.5f, -0.5f}, {1.0f, 0.0f, 0.0f, 1.0f}},
         {{-0.5f, 0.5f}, {0.0f, 1.0f, 0.0f, 1.0f}},
         {{0.5f, 0.5f}, {0.0f, 0.0f, 1.0f, 1.0f}}};
 
-    // 创建一个足以容纳全部顶点数据的顶点缓冲区。
-    vertexBuffer vertexBuffer_triangle(sizeof(vertices));
+    // 创建顶点缓冲区，并把顶点数据传进去。
+    vertexBuffer vertexBuffer_rectangle(sizeof(vertices));
+    vertexBuffer_rectangle.TransferData(vertices);
 
-    // 把 CPU 侧数组内容传输到顶点缓冲区里。
-    vertexBuffer_triangle.TransferData(vertices);
+    // 索引缓冲区里的数字并不是顶点数据本身，
+    // 而是“去顶点数组里取第几个顶点”的编号。
+    const uint16_t indices[] = {
+        0, 1, 2,
+        1, 2, 3};
+
+    // 创建索引缓冲区，并把索引数组传进去。
+    indexBuffer indexBuffer_rectangle(sizeof(indices));
+    indexBuffer_rectangle.TransferData(indices);
 
     // 继续把清屏颜色设成红色。
     VkClearValue clearColor = {.color = {1.0f, 0.0f, 0.0f, 1.0f}};
@@ -194,16 +201,20 @@ int main()
         // 开始 render pass，并把当前 framebuffer 清成红色。
         renderPass.CmdBegin(commandBuffer, framebuffers[i], {{}, windowSize}, clearColor);
 
-        // 顶点缓冲区是可以一次绑定多个槽位的。
-        // 这里先只绑定一个槽位，所以 binding 0 对应的就是 vertexBuffer_triangle。
+        // 先绑定顶点缓冲区到 binding 0。
         const VkDeviceSize offset = 0;
-        vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffer_triangle.Address(), &offset);
+        vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffer_rectangle.Address(), &offset);
+
+        // 再绑定索引缓冲区。
+        // 这里明确说明索引类型是 uint16_t。
+        vkCmdBindIndexBuffer(commandBuffer, indexBuffer_rectangle, 0, VK_INDEX_TYPE_UINT16);
 
         // 绑定这一章使用的图形管线。
         pipeline_triangle.CmdBind(commandBuffer);
 
-        // 绘制 3 个顶点，组成一个三角形。
-        vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+        // 按索引绘制 6 个索引，也就是两个三角形。
+        // 这两个三角形会共同拼成一个长方形。
+        vkCmdDrawIndexed(commandBuffer, 6, 1, 0, 0, 0);
 
         // 结束 render pass。
         renderPass.CmdEnd(commandBuffer);
