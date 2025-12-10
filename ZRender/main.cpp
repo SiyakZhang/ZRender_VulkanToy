@@ -15,7 +15,7 @@ struct vertex
     glm::vec4 color;
 };
 
-// 三角形示例使用的管线布局。
+// 图形管线布局。
 pipelineLayout pipelineLayout_triangle;
 
 // 图形管线对象。
@@ -36,10 +36,10 @@ void CreateLayout()
 
 void CreatePipeline()
 {
-    // 继续复用上一节的顶点缓冲区着色器。
-    static shaderModule vert("shader/VertexBuffer.vert.spv");
+    // 顶点着色器改成实例化绘制版本。
+    static shaderModule vert("shader/InstancedRendering.vert.spv");
 
-    // 片段着色器也保持不变。
+    // 片段着色器继续复用上一节的版本。
     static shaderModule frag("shader/VertexBuffer.frag.spv");
 
     // 当前图形管线由顶点和片段两个阶段组成。
@@ -57,8 +57,12 @@ void CreatePipeline()
         // 指定这条管线要在屏幕 render pass 中执行。
         pipelineCiPack.SetRenderPass(RenderPassAndFramebuffers().renderPass);
 
-        // binding 0 对应后面绑定到槽位 0 的顶点缓冲区。
+        // binding 0 仍然用于逐顶点输入。
         pipelineCiPack.vertexInputBindings.emplace_back(0, sizeof(vertex), VK_VERTEX_INPUT_RATE_VERTEX);
+
+        // binding 1 改成逐实例输入。
+        // 这里每个实例只额外提供一个 vec2，用来表示这个实例整体的平移偏移。
+        pipelineCiPack.vertexInputBindings.emplace_back(1, sizeof(glm::vec2), VK_VERTEX_INPUT_RATE_INSTANCE);
 
         // location 0 对应顶点结构里的 position。
         pipelineCiPack.vertexInputAttributes.emplace_back(
@@ -73,6 +77,13 @@ void CreatePipeline()
             0,
             VK_FORMAT_R32G32B32A32_SFLOAT,
             offsetof(vertex, color));
+
+        // location 2 来自 binding 1，也就是逐实例输入的偏移量。
+        pipelineCiPack.vertexInputAttributes.emplace_back(
+            2,
+            1,
+            VK_FORMAT_R32G32_SFLOAT,
+            0);
 
         // 输入图元仍然解释为三角形列表。
         pipelineCiPack.inputAssemblyStateCi.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
@@ -155,27 +166,26 @@ int main()
     // 申请一个主命令缓冲区对象。
     commandPool.AllocateBuffers(commandBuffer);
 
-    // 先在 CPU 侧准备四个顶点。
-    // 这四个顶点会组成一个长方形的四个角。
+    // 先准备“所有实例共用”的三角形顶点数据。
     const vertex vertices[] = {
-        {{-0.5f, -0.5f}, {1.0f, 1.0f, 0.0f, 1.0f}},
-        {{0.5f, -0.5f}, {1.0f, 0.0f, 0.0f, 1.0f}},
+        {{0.0f, -0.5f}, {1.0f, 0.0f, 0.0f, 1.0f}},
         {{-0.5f, 0.5f}, {0.0f, 1.0f, 0.0f, 1.0f}},
         {{0.5f, 0.5f}, {0.0f, 0.0f, 1.0f, 1.0f}}};
 
-    // 创建顶点缓冲区，并把顶点数据传进去。
-    vertexBuffer vertexBuffer_rectangle(sizeof(vertices));
-    vertexBuffer_rectangle.TransferData(vertices);
+    // 这个顶点缓冲区按“逐顶点”频率读取。
+    vertexBuffer vertexBuffer_perVertex(sizeof(vertices));
+    vertexBuffer_perVertex.TransferData(vertices);
 
-    // 索引缓冲区里的数字并不是顶点数据本身，
-    // 而是“去顶点数组里取第几个顶点”的编号。
-    const uint16_t indices[] = {
-        0, 1, 2,
-        1, 2, 3};
+    // 再准备“每个实例独有”的偏移数据。
+    // 这里一共绘制三个实例，所以准备三个偏移量。
+    const glm::vec2 offsets[] = {
+        {0.0f, 0.0f},
+        {-0.5f, 0.0f},
+        {0.5f, 0.0f}};
 
-    // 创建索引缓冲区，并把索引数组传进去。
-    indexBuffer indexBuffer_rectangle(sizeof(indices));
-    indexBuffer_rectangle.TransferData(indices);
+    // 这个顶点缓冲区按“逐实例”频率读取。
+    vertexBuffer vertexBuffer_perInstance(sizeof(offsets));
+    vertexBuffer_perInstance.TransferData(offsets);
 
     // 继续把清屏颜色设成红色。
     VkClearValue clearColor = {.color = {1.0f, 0.0f, 0.0f, 1.0f}};
@@ -201,20 +211,17 @@ int main()
         // 开始 render pass，并把当前 framebuffer 清成红色。
         renderPass.CmdBegin(commandBuffer, framebuffers[i], {{}, windowSize}, clearColor);
 
-        // 先绑定顶点缓冲区到 binding 0。
-        const VkDeviceSize offset = 0;
-        vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffer_rectangle.Address(), &offset);
-
-        // 再绑定索引缓冲区。
-        // 这里明确说明索引类型是 uint16_t。
-        vkCmdBindIndexBuffer(commandBuffer, indexBuffer_rectangle, 0, VK_INDEX_TYPE_UINT16);
+        // 一次性把两个顶点缓冲区都绑定上。
+        // binding 0 是逐顶点数据，binding 1 是逐实例数据。
+        const VkBuffer buffers[] = {vertexBuffer_perVertex, vertexBuffer_perInstance};
+        const VkDeviceSize offsetsInBuffers[] = {};
+        vkCmdBindVertexBuffers(commandBuffer, 0, 2, buffers, offsetsInBuffers);
 
         // 绑定这一章使用的图形管线。
         pipeline_triangle.CmdBind(commandBuffer);
 
-        // 按索引绘制 6 个索引，也就是两个三角形。
-        // 这两个三角形会共同拼成一个长方形。
-        vkCmdDrawIndexed(commandBuffer, 6, 1, 0, 0, 0);
+        // 每个实例绘制 3 个顶点，一共绘制 3 个实例。
+        vkCmdDraw(commandBuffer, 3, 3, 0, 0);
 
         // 结束 render pass。
         renderPass.CmdEnd(commandBuffer);
