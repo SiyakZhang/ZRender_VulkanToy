@@ -30,16 +30,28 @@ const easyVulkan::renderPassWithFramebuffers& RenderPassAndFramebuffers()
 
 void CreateLayout()
 {
-    // 本节还没有描述符和 push constant，所以空管线布局就够了。
-    pipelineLayout_triangle.Create();
+    // Push constant 想要在着色器里可见，必须先在管线布局里声明对应范围。
+    VkPushConstantRange pushConstantRange = {
+        VK_SHADER_STAGE_VERTEX_BIT,
+        0,
+        24};
+
+    // 本章要传 3 个 vec2 给顶点着色器。
+    // 一个 vec2 是 8 字节，所以总大小正好是 24 字节。
+    VkPipelineLayoutCreateInfo pipelineLayoutCreateInfo = {
+        .pushConstantRangeCount = 1,
+        .pPushConstantRanges = &pushConstantRange};
+
+    // 用带 push constant range 的布局来创建管线布局。
+    pipelineLayout_triangle.Create(pipelineLayoutCreateInfo);
 }
 
 void CreatePipeline()
 {
-    // 顶点着色器改成实例化绘制版本。
-    static shaderModule vert("shader/InstancedRendering.vert.spv");
+    // 顶点着色器改成 push constant 版本。
+    static shaderModule vert("shader/PushConstant.vert.spv");
 
-    // 片段着色器继续复用上一节的版本。
+    // 片段着色器继续复用之前的版本。
     static shaderModule frag("shader/VertexBuffer.frag.spv");
 
     // 当前图形管线由顶点和片段两个阶段组成。
@@ -57,12 +69,8 @@ void CreatePipeline()
         // 指定这条管线要在屏幕 render pass 中执行。
         pipelineCiPack.SetRenderPass(RenderPassAndFramebuffers().renderPass);
 
-        // binding 0 仍然用于逐顶点输入。
+        // 这一章重新回到单个逐顶点输入缓冲区。
         pipelineCiPack.vertexInputBindings.emplace_back(0, sizeof(vertex), VK_VERTEX_INPUT_RATE_VERTEX);
-
-        // binding 1 改成逐实例输入。
-        // 这里每个实例只额外提供一个 vec2，用来表示这个实例整体的平移偏移。
-        pipelineCiPack.vertexInputBindings.emplace_back(1, sizeof(glm::vec2), VK_VERTEX_INPUT_RATE_INSTANCE);
 
         // location 0 对应顶点结构里的 position。
         pipelineCiPack.vertexInputAttributes.emplace_back(
@@ -77,13 +85,6 @@ void CreatePipeline()
             0,
             VK_FORMAT_R32G32B32A32_SFLOAT,
             offsetof(vertex, color));
-
-        // location 2 来自 binding 1，也就是逐实例输入的偏移量。
-        pipelineCiPack.vertexInputAttributes.emplace_back(
-            2,
-            1,
-            VK_FORMAT_R32G32_SFLOAT,
-            0);
 
         // 输入图元仍然解释为三角形列表。
         pipelineCiPack.inputAssemblyStateCi.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
@@ -166,26 +167,22 @@ int main()
     // 申请一个主命令缓冲区对象。
     commandPool.AllocateBuffers(commandBuffer);
 
-    // 先准备“所有实例共用”的三角形顶点数据。
+    // 三个实例共用同一份三角形顶点数据。
     const vertex vertices[] = {
         {{0.0f, -0.5f}, {1.0f, 0.0f, 0.0f, 1.0f}},
         {{-0.5f, 0.5f}, {0.0f, 1.0f, 0.0f, 1.0f}},
         {{0.5f, 0.5f}, {0.0f, 0.0f, 1.0f, 1.0f}}};
 
-    // 这个顶点缓冲区按“逐顶点”频率读取。
-    vertexBuffer vertexBuffer_perVertex(sizeof(vertices));
-    vertexBuffer_perVertex.TransferData(vertices);
+    // 创建顶点缓冲区，并把顶点数据传进去。
+    vertexBuffer vertexBuffer_triangle(sizeof(vertices));
+    vertexBuffer_triangle.TransferData(vertices);
 
-    // 再准备“每个实例独有”的偏移数据。
-    // 这里一共绘制三个实例，所以准备三个偏移量。
-    const glm::vec2 offsets[] = {
+    // push constant 里直接写三组位置偏移。
+    // 后面顶点着色器会用 gl_InstanceIndex 取出当前实例对应的偏移量。
+    const glm::vec2 pushConstants[] = {
         {0.0f, 0.0f},
         {-0.5f, 0.0f},
         {0.5f, 0.0f}};
-
-    // 这个顶点缓冲区按“逐实例”频率读取。
-    vertexBuffer vertexBuffer_perInstance(sizeof(offsets));
-    vertexBuffer_perInstance.TransferData(offsets);
 
     // 继续把清屏颜色设成红色。
     VkClearValue clearColor = {.color = {1.0f, 0.0f, 0.0f, 1.0f}};
@@ -211,14 +208,22 @@ int main()
         // 开始 render pass，并把当前 framebuffer 清成红色。
         renderPass.CmdBegin(commandBuffer, framebuffers[i], {{}, windowSize}, clearColor);
 
-        // 一次性把两个顶点缓冲区都绑定上。
-        // binding 0 是逐顶点数据，binding 1 是逐实例数据。
-        const VkBuffer buffers[] = {vertexBuffer_perVertex, vertexBuffer_perInstance};
-        const VkDeviceSize offsetsInBuffers[] = {};
-        vkCmdBindVertexBuffers(commandBuffer, 0, 2, buffers, offsetsInBuffers);
+        // 绑定单个逐顶点输入缓冲区。
+        const VkDeviceSize offset = 0;
+        vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffer_triangle.Address(), &offset);
 
         // 绑定这一章使用的图形管线。
         pipeline_triangle.CmdBind(commandBuffer);
+
+        // 把三组实例偏移一次性写入 push constant。
+        // 因为这块数据会直接录进命令缓冲区，所以每次重录命令时都要重新写。
+        vkCmdPushConstants(
+            commandBuffer,
+            pipelineLayout_triangle,
+            VK_SHADER_STAGE_VERTEX_BIT,
+            0,
+            sizeof(pushConstants),
+            &pushConstants);
 
         // 每个实例绘制 3 个顶点，一共绘制 3 个实例。
         vkCmdDraw(commandBuffer, 3, 3, 0, 0);
