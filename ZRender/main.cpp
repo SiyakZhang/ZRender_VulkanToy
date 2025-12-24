@@ -15,6 +15,9 @@ struct vertex
     glm::vec4 color;
 };
 
+// 这一章开始引入描述符集布局。
+descriptorSetLayout descriptorSetLayout_triangle;
+
 // 图形管线布局。
 pipelineLayout pipelineLayout_triangle;
 
@@ -30,26 +33,34 @@ const easyVulkan::renderPassWithFramebuffers& RenderPassAndFramebuffers()
 
 void CreateLayout()
 {
-    // Push constant 想要在着色器里可见，必须先在管线布局里声明对应范围。
-    VkPushConstantRange pushConstantRange = {
-        VK_SHADER_STAGE_VERTEX_BIT,
-        0,
-        24};
+    // 先描述 0 号 binding 上要绑定一个 uniform buffer。
+    VkDescriptorSetLayoutBinding descriptorSetLayoutBinding_trianglePosition = {
+        .binding = 0,
+        .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+        .descriptorCount = 1,
+        .stageFlags = VK_SHADER_STAGE_VERTEX_BIT};
 
-    // 本章要传 3 个 vec2 给顶点着色器。
-    // 一个 vec2 是 8 字节，所以总大小正好是 24 字节。
+    // 这一章只有一个 binding，所以描述符布局里也只放一个条目。
+    VkDescriptorSetLayoutCreateInfo descriptorSetLayoutCreateInfo_triangle = {
+        .bindingCount = 1,
+        .pBindings = &descriptorSetLayoutBinding_trianglePosition};
+
+    // 创建描述符集布局。
+    descriptorSetLayout_triangle.Create(descriptorSetLayoutCreateInfo_triangle);
+
+    // 管线布局需要知道后面会绑定哪几组描述符集布局。
     VkPipelineLayoutCreateInfo pipelineLayoutCreateInfo = {
-        .pushConstantRangeCount = 1,
-        .pPushConstantRanges = &pushConstantRange};
+        .setLayoutCount = 1,
+        .pSetLayouts = descriptorSetLayout_triangle.Address()};
 
-    // 用带 push constant range 的布局来创建管线布局。
+    // 创建图形管线布局。
     pipelineLayout_triangle.Create(pipelineLayoutCreateInfo);
 }
 
 void CreatePipeline()
 {
-    // 顶点着色器改成 push constant 版本。
-    static shaderModule vert("shader/PushConstant.vert.spv");
+    // 顶点着色器改成 uniform buffer 版本。
+    static shaderModule vert("shader/UniformBuffer.vert.spv");
 
     // 片段着色器继续复用之前的版本。
     static shaderModule frag("shader/VertexBuffer.frag.spv");
@@ -69,7 +80,7 @@ void CreatePipeline()
         // 指定这条管线要在屏幕 render pass 中执行。
         pipelineCiPack.SetRenderPass(RenderPassAndFramebuffers().renderPass);
 
-        // 这一章重新回到单个逐顶点输入缓冲区。
+        // 这一章仍然只绑定一个逐顶点输入缓冲区。
         pipelineCiPack.vertexInputBindings.emplace_back(0, sizeof(vertex), VK_VERTEX_INPUT_RATE_VERTEX);
 
         // location 0 对应顶点结构里的 position。
@@ -141,7 +152,7 @@ int main()
     // 拿到屏幕 render pass 和每张交换链图像对应的 framebuffer。
     const auto& [renderPass, framebuffers] = RenderPassAndFramebuffers();
 
-    // 创建管线布局。
+    // 创建描述符集布局和管线布局。
     CreateLayout();
 
     // 创建图形管线。
@@ -177,12 +188,37 @@ int main()
     vertexBuffer vertexBuffer_triangle(sizeof(vertices));
     vertexBuffer_triangle.TransferData(vertices);
 
-    // push constant 里直接写三组位置偏移。
-    // 后面顶点着色器会用 gl_InstanceIndex 取出当前实例对应的偏移量。
-    const glm::vec2 pushConstants[] = {
-        {0.0f, 0.0f},
-        {-0.5f, 0.0f},
-        {0.5f, 0.0f}};
+    // uniform 缓冲区里的数组在着色器里默认按 std140 布局解释。
+    // vec2 在 std140 数组里每个元素会按 16 字节对齐，
+    // 所以这里在每个真正的 vec2 后面补一个空 vec2，保证 CPU 侧布局与着色器一致。
+    const glm::vec2 uniform_positions[] = {
+        {0.0f, 0.0f}, {},
+        {-0.5f, 0.0f}, {},
+        {0.5f, 0.0f}, {}};
+
+    // 创建 uniform 缓冲区，并把位置数据传进去。
+    uniformBuffer uniformBuffer_trianglePosition(sizeof(uniform_positions));
+    uniformBuffer_trianglePosition.TransferData(uniform_positions);
+
+    // 描述符池里准备 1 个 uniform buffer 类型的描述符名额即可。
+    const VkDescriptorPoolSize descriptorPoolSizes[] = {
+        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1}};
+
+    // 创建描述符池。
+    descriptorPool descriptorPool_triangle(1, descriptorPoolSizes);
+
+    // 从池里分配一个描述符集。
+    descriptorSet descriptorSet_trianglePosition;
+    descriptorPool_triangle.AllocateSets(descriptorSet_trianglePosition, descriptorSetLayout_triangle);
+
+    // 描述这个描述符集实际要访问哪一段缓冲区。
+    VkDescriptorBufferInfo bufferInfo = {
+        .buffer = uniformBuffer_trianglePosition,
+        .offset = 0,
+        .range = VK_WHOLE_SIZE};
+
+    // 把 uniform buffer 信息写进描述符集。
+    descriptorSet_trianglePosition.Write(bufferInfo, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
 
     // 继续把清屏颜色设成红色。
     VkClearValue clearColor = {.color = {1.0f, 0.0f, 0.0f, 1.0f}};
@@ -208,22 +244,23 @@ int main()
         // 开始 render pass，并把当前 framebuffer 清成红色。
         renderPass.CmdBegin(commandBuffer, framebuffers[i], {{}, windowSize}, clearColor);
 
-        // 绑定单个逐顶点输入缓冲区。
+        // 绑定逐顶点输入缓冲区。
         const VkDeviceSize offset = 0;
         vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffer_triangle.Address(), &offset);
 
         // 绑定这一章使用的图形管线。
         pipeline_triangle.CmdBind(commandBuffer);
 
-        // 把三组实例偏移一次性写入 push constant。
-        // 因为这块数据会直接录进命令缓冲区，所以每次重录命令时都要重新写。
-        vkCmdPushConstants(
+        // 再把包含 uniform buffer 的描述符集绑定到 0 号 set。
+        vkCmdBindDescriptorSets(
             commandBuffer,
+            VK_PIPELINE_BIND_POINT_GRAPHICS,
             pipelineLayout_triangle,
-            VK_SHADER_STAGE_VERTEX_BIT,
             0,
-            sizeof(pushConstants),
-            &pushConstants);
+            1,
+            descriptorSet_trianglePosition.Address(),
+            0,
+            nullptr);
 
         // 每个实例绘制 3 个顶点，一共绘制 3 个实例。
         vkCmdDraw(commandBuffer, 3, 3, 0, 0);
