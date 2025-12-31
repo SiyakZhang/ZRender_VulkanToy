@@ -1,7 +1,7 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include "GlfwGeneral.hpp"
 #include "RPFB_Screen.hpp"
-#include "VKBase+.h"
+#include <thread>
 
 using namespace vulkan;
 
@@ -15,10 +15,7 @@ struct vertex
     glm::vec4 color;
 };
 
-// 这一章开始引入描述符集布局。
-descriptorSetLayout descriptorSetLayout_triangle;
-
-// 图形管线布局。
+// 三角形示例使用的管线布局。
 pipelineLayout pipelineLayout_triangle;
 
 // 图形管线对象。
@@ -33,34 +30,14 @@ const easyVulkan::renderPassWithFramebuffers& RenderPassAndFramebuffers()
 
 void CreateLayout()
 {
-    // 先描述 0 号 binding 上要绑定一个 uniform buffer。
-    VkDescriptorSetLayoutBinding descriptorSetLayoutBinding_trianglePosition = {
-        .binding = 0,
-        .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-        .descriptorCount = 1,
-        .stageFlags = VK_SHADER_STAGE_VERTEX_BIT};
-
-    // 这一章只有一个 binding，所以描述符布局里也只放一个条目。
-    VkDescriptorSetLayoutCreateInfo descriptorSetLayoutCreateInfo_triangle = {
-        .bindingCount = 1,
-        .pBindings = &descriptorSetLayoutBinding_trianglePosition};
-
-    // 创建描述符集布局。
-    descriptorSetLayout_triangle.Create(descriptorSetLayoutCreateInfo_triangle);
-
-    // 管线布局需要知道后面会绑定哪几组描述符集布局。
-    VkPipelineLayoutCreateInfo pipelineLayoutCreateInfo = {
-        .setLayoutCount = 1,
-        .pSetLayouts = descriptorSetLayout_triangle.Address()};
-
-    // 创建图形管线布局。
-    pipelineLayout_triangle.Create(pipelineLayoutCreateInfo);
+    // 本节还没有描述符和 push constant，所以空管线布局就够了。
+    pipelineLayout_triangle.Create();
 }
 
 void CreatePipeline()
 {
-    // 顶点着色器改成 uniform buffer 版本。
-    static shaderModule vert("shader/UniformBuffer.vert.spv");
+    // 启动画面结束后，主场景继续使用基础顶点缓冲区三角形着色器。
+    static shaderModule vert("shader/VertexBuffer.vert.spv");
 
     // 片段着色器继续复用之前的版本。
     static shaderModule frag("shader/VertexBuffer.frag.spv");
@@ -149,10 +126,16 @@ int main()
     if (!InitializeWindow(defaultWindowSize))
         return -1;
 
-    // 拿到屏幕 render pass 和每张交换链图像对应的 framebuffer。
+    // 先展示一张启动图片，演示“把图像拷到屏幕”这件事。
+    easyVulkan::BootScreen("image/testImage.png", VK_FORMAT_R8G8B8A8_UNORM);
+
+    // 稍微停一秒，确保启动图能看清楚。
+    std::this_thread::sleep_for(std::chrono::seconds(1));
+
+    // 启动画面结束后，再进入正常的三角形渲染流程。
     const auto& [renderPass, framebuffers] = RenderPassAndFramebuffers();
 
-    // 创建描述符集布局和管线布局。
+    // 创建管线布局。
     CreateLayout();
 
     // 创建图形管线。
@@ -178,7 +161,7 @@ int main()
     // 申请一个主命令缓冲区对象。
     commandPool.AllocateBuffers(commandBuffer);
 
-    // 三个实例共用同一份三角形顶点数据。
+    // 三角形顶点数据。
     const vertex vertices[] = {
         {{0.0f, -0.5f}, {1.0f, 0.0f, 0.0f, 1.0f}},
         {{-0.5f, 0.5f}, {0.0f, 1.0f, 0.0f, 1.0f}},
@@ -187,38 +170,6 @@ int main()
     // 创建顶点缓冲区，并把顶点数据传进去。
     vertexBuffer vertexBuffer_triangle(sizeof(vertices));
     vertexBuffer_triangle.TransferData(vertices);
-
-    // uniform 缓冲区里的数组在着色器里默认按 std140 布局解释。
-    // vec2 在 std140 数组里每个元素会按 16 字节对齐，
-    // 所以这里在每个真正的 vec2 后面补一个空 vec2，保证 CPU 侧布局与着色器一致。
-    const glm::vec2 uniform_positions[] = {
-        {0.0f, 0.0f}, {},
-        {-0.5f, 0.0f}, {},
-        {0.5f, 0.0f}, {}};
-
-    // 创建 uniform 缓冲区，并把位置数据传进去。
-    uniformBuffer uniformBuffer_trianglePosition(sizeof(uniform_positions));
-    uniformBuffer_trianglePosition.TransferData(uniform_positions);
-
-    // 描述符池里准备 1 个 uniform buffer 类型的描述符名额即可。
-    const VkDescriptorPoolSize descriptorPoolSizes[] = {
-        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1}};
-
-    // 创建描述符池。
-    descriptorPool descriptorPool_triangle(1, descriptorPoolSizes);
-
-    // 从池里分配一个描述符集。
-    descriptorSet descriptorSet_trianglePosition;
-    descriptorPool_triangle.AllocateSets(descriptorSet_trianglePosition, descriptorSetLayout_triangle);
-
-    // 描述这个描述符集实际要访问哪一段缓冲区。
-    VkDescriptorBufferInfo bufferInfo = {
-        .buffer = uniformBuffer_trianglePosition,
-        .offset = 0,
-        .range = VK_WHOLE_SIZE};
-
-    // 把 uniform buffer 信息写进描述符集。
-    descriptorSet_trianglePosition.Write(bufferInfo, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
 
     // 继续把清屏颜色设成红色。
     VkClearValue clearColor = {.color = {1.0f, 0.0f, 0.0f, 1.0f}};
@@ -244,26 +195,15 @@ int main()
         // 开始 render pass，并把当前 framebuffer 清成红色。
         renderPass.CmdBegin(commandBuffer, framebuffers[i], {{}, windowSize}, clearColor);
 
-        // 绑定逐顶点输入缓冲区。
+        // 绑定顶点缓冲区。
         const VkDeviceSize offset = 0;
         vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffer_triangle.Address(), &offset);
 
         // 绑定这一章使用的图形管线。
         pipeline_triangle.CmdBind(commandBuffer);
 
-        // 再把包含 uniform buffer 的描述符集绑定到 0 号 set。
-        vkCmdBindDescriptorSets(
-            commandBuffer,
-            VK_PIPELINE_BIND_POINT_GRAPHICS,
-            pipelineLayout_triangle,
-            0,
-            1,
-            descriptorSet_trianglePosition.Address(),
-            0,
-            nullptr);
-
-        // 每个实例绘制 3 个顶点，一共绘制 3 个实例。
-        vkCmdDraw(commandBuffer, 3, 3, 0, 0);
+        // 绘制 3 个顶点，组成一个三角形。
+        vkCmdDraw(commandBuffer, 3, 1, 0, 0);
 
         // 结束 render pass。
         renderPass.CmdEnd(commandBuffer);
