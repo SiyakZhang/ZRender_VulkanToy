@@ -1,25 +1,27 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include "GlfwGeneral.hpp"
 #include "RPFB_Screen.hpp"
-#include <thread>
 
 using namespace vulkan;
 
-// CPU 侧顶点结构必须与顶点着色器声明的输入布局一一对应。
+// 贴图版顶点不再携带颜色，而是携带位置和纹理坐标。
 struct vertex
 {
     // 顶点位置，对应 location 0。
     glm::vec2 position;
 
-    // 顶点颜色，对应 location 1。
-    glm::vec4 color;
+    // 纹理坐标，对应 location 1。
+    glm::vec2 texCoord;
 };
 
-// 三角形示例使用的管线布局。
-pipelineLayout pipelineLayout_triangle;
+// 这一章开始给贴图准备专用的描述符集布局。
+descriptorSetLayout descriptorSetLayout_texture;
+
+// 图形管线布局。
+pipelineLayout pipelineLayout_texture;
 
 // 图形管线对象。
-pipeline pipeline_triangle;
+pipeline pipeline_texture;
 
 const easyVulkan::renderPassWithFramebuffers& RenderPassAndFramebuffers()
 {
@@ -30,20 +32,40 @@ const easyVulkan::renderPassWithFramebuffers& RenderPassAndFramebuffers()
 
 void CreateLayout()
 {
-    // 本节还没有描述符和 push constant，所以空管线布局就够了。
-    pipelineLayout_triangle.Create();
+    // 这里把 0 号 binding 声明成“带采样器的图像”描述符。
+    VkDescriptorSetLayoutBinding descriptorSetLayoutBinding_texture = {
+        .binding = 0,
+        .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        .descriptorCount = 1,
+        .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT};
+
+    // 当前只需要一个 binding。
+    VkDescriptorSetLayoutCreateInfo descriptorSetLayoutCreateInfo_texture = {
+        .bindingCount = 1,
+        .pBindings = &descriptorSetLayoutBinding_texture};
+
+    // 创建描述符集布局。
+    descriptorSetLayout_texture.Create(descriptorSetLayoutCreateInfo_texture);
+
+    // 管线布局需要知道后面会绑定哪几组描述符集布局。
+    VkPipelineLayoutCreateInfo pipelineLayoutCreateInfo = {
+        .setLayoutCount = 1,
+        .pSetLayouts = descriptorSetLayout_texture.Address()};
+
+    // 创建图形管线布局。
+    pipelineLayout_texture.Create(pipelineLayoutCreateInfo);
 }
 
 void CreatePipeline()
 {
-    // 启动画面结束后，主场景继续使用基础顶点缓冲区三角形着色器。
-    static shaderModule vert("shader/VertexBuffer.vert.spv");
+    // 顶点着色器改成贴图版。
+    static shaderModule vert("shader/Texture.vert.spv");
 
-    // 片段着色器继续复用之前的版本。
-    static shaderModule frag("shader/VertexBuffer.frag.spv");
+    // 片段着色器负责采样纹理。
+    static shaderModule frag("shader/Texture.frag.spv");
 
     // 当前图形管线由顶点和片段两个阶段组成。
-    static VkPipelineShaderStageCreateInfo shaderStageCreateInfos_triangle[2] = {
+    static VkPipelineShaderStageCreateInfo shaderStageCreateInfos_texture[2] = {
         vert.StageCreateInfo(VK_SHADER_STAGE_VERTEX_BIT),
         frag.StageCreateInfo(VK_SHADER_STAGE_FRAGMENT_BIT)};
 
@@ -52,7 +74,7 @@ void CreatePipeline()
         graphicsPipelineCreateInfoPack pipelineCiPack;
 
         // 指定管线布局。
-        pipelineCiPack.SetPipelineLayout(pipelineLayout_triangle);
+        pipelineCiPack.SetPipelineLayout(pipelineLayout_texture);
 
         // 指定这条管线要在屏幕 render pass 中执行。
         pipelineCiPack.SetRenderPass(RenderPassAndFramebuffers().renderPass);
@@ -67,15 +89,15 @@ void CreatePipeline()
             VK_FORMAT_R32G32_SFLOAT,
             offsetof(vertex, position));
 
-        // location 1 对应顶点结构里的 color。
+        // location 1 对应顶点结构里的 texCoord。
         pipelineCiPack.vertexInputAttributes.emplace_back(
             1,
             0,
-            VK_FORMAT_R32G32B32A32_SFLOAT,
-            offsetof(vertex, color));
+            VK_FORMAT_R32G32_SFLOAT,
+            offsetof(vertex, texCoord));
 
-        // 输入图元仍然解释为三角形列表。
-        pipelineCiPack.inputAssemblyStateCi.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+        // 这次改用 triangle strip，4 个顶点就能拼出一个矩形。
+        pipelineCiPack.inputAssemblyStateCi.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
 
         // 视口覆盖整个交换链图像。
         pipelineCiPack.viewports.emplace_back(
@@ -99,15 +121,15 @@ void CreatePipeline()
         pipelineCiPack.UpdateAllArrays();
 
         // 挂上顶点和片段两个着色器阶段。
-        pipelineCiPack.SetShaderStages(shaderStageCreateInfos_triangle);
+        pipelineCiPack.SetShaderStages(shaderStageCreateInfos_texture);
 
         // 创建真正的 Vulkan 图形管线。
-        pipeline_triangle.Create(pipelineCiPack);
+        pipeline_texture.Create(pipelineCiPack);
     };
 
     auto Destroy = [] {
         // 交换链重建前先销毁旧管线，避免持有旧尺寸相关状态。
-        pipeline_triangle.~pipeline();
+        pipeline_texture.~pipeline();
     };
 
     // 交换链重建后重新创建图形管线。
@@ -126,16 +148,10 @@ int main()
     if (!InitializeWindow(defaultWindowSize))
         return -1;
 
-    // 先展示一张启动图片，演示“把图像拷到屏幕”这件事。
-    easyVulkan::BootScreen("image/testImage.png", VK_FORMAT_R8G8B8A8_UNORM);
-
-    // 稍微停一秒，确保启动图能看清楚。
-    std::this_thread::sleep_for(std::chrono::seconds(1));
-
-    // 启动画面结束后，再进入正常的三角形渲染流程。
+    // 拿到屏幕 render pass 和每张交换链图像对应的 framebuffer。
     const auto& [renderPass, framebuffers] = RenderPassAndFramebuffers();
 
-    // 创建管线布局。
+    // 创建描述符集布局和管线布局。
     CreateLayout();
 
     // 创建图形管线。
@@ -161,15 +177,37 @@ int main()
     // 申请一个主命令缓冲区对象。
     commandPool.AllocateBuffers(commandBuffer);
 
-    // 三角形顶点数据。
+    // 从磁盘加载一张 2D 贴图，并在内部完成上传和 mipmap 生成。
+    texture2d texture("image/testImage.png", VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM, true);
+
+    // 根据前面封装好的默认参数创建采样器。
+    VkSamplerCreateInfo samplerCreateInfo = texture::SamplerCreateInfo();
+    sampler sampler(samplerCreateInfo);
+
+    // 描述符池里准备 1 个 combined image sampler 类型的描述符名额即可。
+    const VkDescriptorPoolSize descriptorPoolSizes[] = {
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1}};
+
+    // 创建描述符池。
+    descriptorPool descriptorPool_texture(1, descriptorPoolSizes);
+
+    // 从池里分配一个描述符集。
+    descriptorSet descriptorSet_texture;
+    descriptorPool_texture.AllocateSets(descriptorSet_texture, descriptorSetLayout_texture);
+
+    // 把“采样器 + 图像视图 + 图像布局”一起写进描述符集。
+    descriptorSet_texture.Write(texture.DescriptorImageInfo(sampler), VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
+
+    // 矩形四个顶点的位置和对应的纹理坐标。
     const vertex vertices[] = {
-        {{0.0f, -0.5f}, {1.0f, 0.0f, 0.0f, 1.0f}},
-        {{-0.5f, 0.5f}, {0.0f, 1.0f, 0.0f, 1.0f}},
-        {{0.5f, 0.5f}, {0.0f, 0.0f, 1.0f, 1.0f}}};
+        {{-0.5f, -0.5f}, {0.0f, 0.0f}},
+        {{0.5f, -0.5f}, {1.0f, 0.0f}},
+        {{-0.5f, 0.5f}, {0.0f, 1.0f}},
+        {{0.5f, 0.5f}, {1.0f, 1.0f}}};
 
     // 创建顶点缓冲区，并把顶点数据传进去。
-    vertexBuffer vertexBuffer_triangle(sizeof(vertices));
-    vertexBuffer_triangle.TransferData(vertices);
+    vertexBuffer vertexBuffer_rectangle(sizeof(vertices));
+    vertexBuffer_rectangle.TransferData(vertices);
 
     // 继续把清屏颜色设成红色。
     VkClearValue clearColor = {.color = {1.0f, 0.0f, 0.0f, 1.0f}};
@@ -197,13 +235,24 @@ int main()
 
         // 绑定顶点缓冲区。
         const VkDeviceSize offset = 0;
-        vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffer_triangle.Address(), &offset);
+        vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffer_rectangle.Address(), &offset);
 
         // 绑定这一章使用的图形管线。
-        pipeline_triangle.CmdBind(commandBuffer);
+        pipeline_texture.CmdBind(commandBuffer);
 
-        // 绘制 3 个顶点，组成一个三角形。
-        vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+        // 再把贴图描述符集绑定到 0 号 set。
+        vkCmdBindDescriptorSets(
+            commandBuffer,
+            VK_PIPELINE_BIND_POINT_GRAPHICS,
+            pipelineLayout_texture,
+            0,
+            1,
+            descriptorSet_texture.Address(),
+            0,
+            nullptr);
+
+        // 绘制 4 个顶点，按 triangle strip 组成一个矩形。
+        vkCmdDraw(commandBuffer, 4, 1, 0, 0);
 
         // 结束 render pass。
         renderPass.CmdEnd(commandBuffer);
