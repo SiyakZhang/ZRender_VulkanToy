@@ -1013,6 +1013,163 @@ namespace vulkan
         }
     };
 
+    class attachment
+    {
+    protected:
+        // 附件对象本质上也是“图像 + 图像视图”的组合。
+        imageView imageView;
+        imageMemory imageMemory;
+
+        attachment() = default;
+
+    public:
+        VkImageView ImageView() const
+        {
+            return imageView;
+        }
+
+        VkImage Image() const
+        {
+            return imageMemory.Image();
+        }
+
+        const VkImageView* AddressOfImageView() const
+        {
+            return imageView.Address();
+        }
+
+        const VkImage* AddressOfImage() const
+        {
+            return imageMemory.AddressOfImage();
+        }
+
+        VkDescriptorImageInfo DescriptorImageInfo(VkSampler sampler) const
+        {
+            // 当附件后续要被采样时，写描述符所需的三元组依旧是采样器、图像视图和最终布局。
+            return {sampler, imageView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+        }
+    };
+
+    class colorAttachment : public attachment
+    {
+    public:
+        colorAttachment() = default;
+
+        colorAttachment(
+            VkFormat format,
+            VkExtent2D extent,
+            uint32_t layerCount = 1,
+            VkSampleCountFlagBits sampleCount = VK_SAMPLE_COUNT_1_BIT,
+            VkImageUsageFlags otherUsages = 0)
+        {
+            Create(format, extent, layerCount, sampleCount, otherUsages);
+        }
+
+        void Create(
+            VkFormat format,
+            VkExtent2D extent,
+            uint32_t layerCount = 1,
+            VkSampleCountFlagBits sampleCount = VK_SAMPLE_COUNT_1_BIT,
+            VkImageUsageFlags otherUsages = 0)
+        {
+            // 颜色附件至少要带 COLOR_ATTACHMENT_BIT。
+            // 若后面还要采样或清屏，则再把额外用途一起并进去。
+            VkImageCreateInfo imageCreateInfo = {
+                .imageType = VK_IMAGE_TYPE_2D,
+                .format = format,
+                .extent = {extent.width, extent.height, 1},
+                .mipLevels = 1,
+                .arrayLayers = layerCount,
+                .samples = sampleCount,
+                .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | otherUsages};
+
+            // 颜色附件通常放在 device-local 内存里。
+            // 如果声明成 transient attachment，则再顺带请求 lazily allocated。
+            imageMemory.Create(
+                imageCreateInfo,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
+                    (otherUsages & VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT ? VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT : 0));
+
+            // 颜色附件视图的 aspect 固定是 COLOR。
+            imageView.Create(
+                imageMemory.Image(),
+                layerCount > 1 ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D,
+                format,
+                {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, layerCount});
+        }
+
+        static bool FormatAvailability(VkFormat format, bool supportBlending = true)
+        {
+            // 若 supportBlending 为 true，就额外要求格式支持 blend。
+            const VkFormatFeatureFlags requiredFeature = supportBlending
+                                                             ? VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT
+                                                             : VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT;
+            return (graphicsBase::Plus().FormatProperties(format).optimalTilingFeatures & requiredFeature) == requiredFeature;
+        }
+    };
+
+    class depthStencilAttachment : public attachment
+    {
+    public:
+        depthStencilAttachment() = default;
+
+        depthStencilAttachment(
+            VkFormat format,
+            VkExtent2D extent,
+            uint32_t layerCount = 1,
+            VkSampleCountFlagBits sampleCount = VK_SAMPLE_COUNT_1_BIT,
+            VkImageUsageFlags otherUsages = 0,
+            bool stencilOnly = false)
+        {
+            Create(format, extent, layerCount, sampleCount, otherUsages, stencilOnly);
+        }
+
+        void Create(
+            VkFormat format,
+            VkExtent2D extent,
+            uint32_t layerCount = 1,
+            VkSampleCountFlagBits sampleCount = VK_SAMPLE_COUNT_1_BIT,
+            VkImageUsageFlags otherUsages = 0,
+            bool stencilOnly = false)
+        {
+            // 深度模板附件至少要带 DEPTH_STENCIL_ATTACHMENT_BIT。
+            VkImageCreateInfo imageCreateInfo = {
+                .imageType = VK_IMAGE_TYPE_2D,
+                .format = format,
+                .extent = {extent.width, extent.height, 1},
+                .mipLevels = 1,
+                .arrayLayers = layerCount,
+                .samples = sampleCount,
+                .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | otherUsages};
+
+            imageMemory.Create(
+                imageCreateInfo,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
+                    (otherUsages & VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT ? VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT : 0));
+
+            // 默认优先带上深度 aspect。
+            VkImageAspectFlags aspectMask = stencilOnly ? 0 : VK_IMAGE_ASPECT_DEPTH_BIT;
+
+            // 带模板分量的格式还要补上 STENCIL aspect。
+            if (format > VK_FORMAT_S8_UINT)
+                aspectMask |= VK_IMAGE_ASPECT_STENCIL_BIT;
+            else if (format == VK_FORMAT_S8_UINT)
+                aspectMask = VK_IMAGE_ASPECT_STENCIL_BIT;
+
+            imageView.Create(
+                imageMemory.Image(),
+                layerCount > 1 ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D,
+                format,
+                {aspectMask, 0, 1, 0, layerCount});
+        }
+
+        static bool FormatAvailability(VkFormat format)
+        {
+            return (graphicsBase::Plus().FormatProperties(format).optimalTilingFeatures &
+                    VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT) != 0;
+        }
+    };
+
     class texture
     {
     protected:

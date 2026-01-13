@@ -10,6 +10,13 @@ const VkExtent2D& windowSize = graphicsBase::Base().SwapchainCreateInfo().imageE
 
 namespace easyVulkan
 {
+    struct renderPassWithFramebuffer
+    {
+        // 离屏画布这边只需要一个 framebuffer。
+        renderPass renderPass;
+        framebuffer framebuffer;
+    };
+
     struct renderPassWithFramebuffers
     {
         // 这是屏幕渲染使用的 render pass。
@@ -88,6 +95,146 @@ namespace easyVulkan
         graphicsBase::Base().AddCallback_DestroySwapchain(DestroyFramebuffers);
 
         return rpwf;
+    }
+
+    // 这张颜色附件会被当作离屏画布使用。
+    inline colorAttachment ca_canvas;
+
+    const renderPassWithFramebuffer& CreateRpwf_Canvas(VkExtent2D canvasSize = windowSize)
+    {
+        // 离屏画布这边只创建一个 framebuffer 即可。
+        static renderPassWithFramebuffer rpwf;
+
+        // 画布本身既要能当颜色附件来渲染，
+        // 也要能在后续被采样，还要支持被 clear 命令写入。
+        ca_canvas.Create(
+            graphicsBase::Base().SwapchainCreateInfo().imageFormat,
+            canvasSize,
+            1,
+            VK_SAMPLE_COUNT_1_BIT,
+            VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+
+        // 这张离屏画布开始渲染前要保留原来的内容，
+        // 渲染结束后则回到 shader-read-only，方便后面采样到屏幕。
+        VkAttachmentDescription attachmentDescription = {
+            .format = graphicsBase::Base().SwapchainCreateInfo().imageFormat,
+            .samples = VK_SAMPLE_COUNT_1_BIT,
+            .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
+            .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+            .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+            .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+            .initialLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            .finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+
+        // 子通道里唯一的颜色附件索引就是 0。
+        VkAttachmentReference attachmentReference = {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+
+        // 离屏画布 render pass 同样只需要一个图形子通道。
+        VkSubpassDescription subpassDescription = {
+            .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
+            .colorAttachmentCount = 1,
+            .pColorAttachments = &attachmentReference};
+
+        // 这里准备两条依赖：
+        // 1. 开始渲染前，把“之前被片段着色器采样”的状态切回颜色附件写入；
+        // 2. 结束渲染后，再把颜色附件写入结果过渡回片段着色器采样。
+        VkSubpassDependency subpassDependencies[2] = {
+            {
+                .srcSubpass = VK_SUBPASS_EXTERNAL,
+                .dstSubpass = 0,
+                .srcStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                .dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                .srcAccessMask = 0,
+                .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                .dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT,
+            },
+            {
+                .srcSubpass = 0,
+                .dstSubpass = VK_SUBPASS_EXTERNAL,
+                .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                .dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+                .dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT,
+            }};
+
+        // 创建离屏 render pass。
+        VkRenderPassCreateInfo renderPassCreateInfo = {
+            .attachmentCount = 1,
+            .pAttachments = &attachmentDescription,
+            .subpassCount = 1,
+            .pSubpasses = &subpassDescription,
+            .dependencyCount = 2,
+            .pDependencies = subpassDependencies};
+        rpwf.renderPass.Create(renderPassCreateInfo);
+
+        // 创建离屏 framebuffer，它唯一的附件就是 ca_canvas。
+        VkFramebufferCreateInfo framebufferCreateInfo = {
+            .renderPass = rpwf.renderPass,
+            .attachmentCount = 1,
+            .pAttachments = ca_canvas.AddressOfImageView(),
+            .width = canvasSize.width,
+            .height = canvasSize.height,
+            .layers = 1};
+        rpwf.framebuffer.Create(framebufferCreateInfo);
+
+        return rpwf;
+    }
+
+    void CmdClearCanvas(VkCommandBuffer commandBuffer, VkClearColorValue clearColor)
+    {
+        // 这条命令要在离屏 render pass 开始前调用。
+        VkImageSubresourceRange imageSubresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+
+        // 先把画布从 shader-read-only 切到 transfer-dst，准备执行清屏。
+        VkImageMemoryBarrier imageMemoryBarrier = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+            .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = ca_canvas.Image(),
+            .subresourceRange = imageSubresourceRange};
+
+        vkCmdPipelineBarrier(
+            commandBuffer,
+            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+            VK_PIPELINE_STAGE_TRANSFER_BIT,
+            0,
+            0,
+            nullptr,
+            0,
+            nullptr,
+            1,
+            &imageMemoryBarrier);
+
+        // 真正执行清屏。
+        vkCmdClearColorImage(
+            commandBuffer,
+            ca_canvas.Image(),
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            &clearColor,
+            1,
+            &imageSubresourceRange);
+
+        // 清屏结束后，再切回 shader-read-only。
+        // 后续离屏 render pass 开始时，会通过子通道依赖把它正确过渡到 color-attachment-optimal。
+        imageMemoryBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        imageMemoryBarrier.dstAccessMask = 0;
+        imageMemoryBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        imageMemoryBarrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+        vkCmdPipelineBarrier(
+            commandBuffer,
+            VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+            0,
+            0,
+            nullptr,
+            0,
+            nullptr,
+            1,
+            &imageMemoryBarrier);
     }
 
     void BootScreen(const char* imagePath, VkFormat imageFormat)
