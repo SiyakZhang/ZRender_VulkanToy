@@ -237,6 +237,118 @@ namespace easyVulkan
             &imageMemoryBarrier);
     }
 
+    // 每一张交换链图像都要配一个对应的深度模板附件。
+    inline std::vector<depthStencilAttachment> dsas_screenWithDS;
+
+    const renderPassWithFramebuffers& CreateRpwf_ScreenWithDS(VkFormat depthStencilFormat = VK_FORMAT_D24_UNORM_S8_UINT)
+    {
+        // 这套 render pass + framebuffer 组合专门给带深度测试的屏幕渲染使用。
+        static renderPassWithFramebuffers rpwf;
+
+        // 首次调用时记住使用哪一种深度模板格式，后续交换链重建继续沿用它。
+        static VkFormat s_depthStencilFormat = depthStencilFormat;
+
+        // 0 号附件是交换链颜色图像，1 号附件是深度模板图像。
+        VkAttachmentDescription attachmentDescriptions[2] = {
+            {
+                .format = graphicsBase::Base().SwapchainCreateInfo().imageFormat,
+                .samples = VK_SAMPLE_COUNT_1_BIT,
+                .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+                .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+                .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+                .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+                .finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+            },
+            {
+                .format = s_depthStencilFormat,
+                .samples = VK_SAMPLE_COUNT_1_BIT,
+                .loadOp = s_depthStencilFormat != VK_FORMAT_S8_UINT ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+                .storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+                .stencilLoadOp = s_depthStencilFormat >= VK_FORMAT_S8_UINT ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+                .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+                .finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+            }};
+
+        // 子通道里 0 号索引用作颜色附件，1 号索引用作深度模板附件。
+        VkAttachmentReference attachmentReferences[2] = {
+            {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},
+            {1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL},
+        };
+
+        // 这条子通道同时输出颜色并执行深度测试。
+        VkSubpassDescription subpassDescription = {
+            .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
+            .colorAttachmentCount = 1,
+            .pColorAttachments = attachmentReferences,
+            .pDepthStencilAttachment = attachmentReferences + 1,
+        };
+
+        // 深度附件会在 early-fragment-tests 阶段参与 clear 和测试。
+        VkSubpassDependency subpassDependency = {
+            .srcSubpass = VK_SUBPASS_EXTERNAL,
+            .dstSubpass = 0,
+            .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+            .dstStageMask = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+            .srcAccessMask = 0,
+            .dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+            .dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT,
+        };
+
+        VkRenderPassCreateInfo renderPassCreateInfo = {
+            .attachmentCount = 2,
+            .pAttachments = attachmentDescriptions,
+            .subpassCount = 1,
+            .pSubpasses = &subpassDescription,
+            .dependencyCount = 1,
+            .pDependencies = &subpassDependency,
+        };
+        rpwf.renderPass.Create(renderPassCreateInfo);
+
+        auto CreateFramebuffers = [] {
+            // 交换链里有几张颜色图像，这里就创建几张深度附件和几套 framebuffer。
+            dsas_screenWithDS.resize(graphicsBase::Base().SwapchainImageCount());
+            rpwf.framebuffers.resize(graphicsBase::Base().SwapchainImageCount());
+
+            for (auto& depthStencil : dsas_screenWithDS)
+            {
+                // 深度模板附件只在本次 render pass 内部使用，所以可以声明成 transient attachment。
+                depthStencil.Create(s_depthStencilFormat, windowSize, 1, VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT);
+            }
+
+            VkFramebufferCreateInfo framebufferCreateInfo = {
+                .renderPass = rpwf.renderPass,
+                .attachmentCount = 2,
+                .width = windowSize.width,
+                .height = windowSize.height,
+                .layers = 1,
+            };
+
+            for (size_t i = 0; i < graphicsBase::Base().SwapchainImageCount(); ++i)
+            {
+                // 每个 framebuffer 都绑定“当前交换链 image view + 对应的深度模板 image view”。
+                VkImageView attachments[2] = {
+                    graphicsBase::Base().SwapchainImageView(static_cast<uint32_t>(i)),
+                    dsas_screenWithDS[i].ImageView(),
+                };
+                framebufferCreateInfo.pAttachments = attachments;
+                rpwf.framebuffers[i].Create(framebufferCreateInfo);
+            }
+        };
+
+        auto DestroyFramebuffers = [] {
+            // 交换链销毁前一起释放深度附件和 framebuffer 容器。
+            dsas_screenWithDS.clear();
+            rpwf.framebuffers.clear();
+        };
+
+        CreateFramebuffers();
+
+        ExecuteOnce(rpwf);
+        graphicsBase::Base().AddCallback_CreateSwapchain(CreateFramebuffers);
+        graphicsBase::Base().AddCallback_DestroySwapchain(DestroyFramebuffers);
+        return rpwf;
+    }
+
     void BootScreen(const char* imagePath, VkFormat imageFormat)
     {
         // 先把启动图从磁盘读进内存。

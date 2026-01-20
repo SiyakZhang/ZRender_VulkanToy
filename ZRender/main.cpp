@@ -4,134 +4,81 @@
 
 using namespace vulkan;
 
-// 离屏画线那条管线。
-pipelineLayout pipelineLayout_line;
-pipeline pipeline_line;
-
-// 把离屏画布采样到屏幕时使用的描述符集布局和图形管线。
-descriptorSetLayout descriptorSetLayout_texture;
-pipelineLayout pipelineLayout_screen;
-pipeline pipeline_screen;
-
-const easyVulkan::renderPassWithFramebuffers& RenderPassAndFramebuffers_Screen()
+struct vertex
 {
-    // 屏幕这边继续沿用普通交换链 render pass。
-    static const auto& rpwf = easyVulkan::CreateRpwf_Screen();
-    return rpwf;
-}
+    // 立方体顶点在模型空间中的位置。
+    glm::vec3 position;
 
-const easyVulkan::renderPassWithFramebuffer& RenderPassAndFramebuffer_Offscreen(VkExtent2D canvasSize)
+    // 每个面的颜色，直接传给片段着色器显示。
+    glm::vec4 color;
+};
+
+// 这条管线负责把彩色立方体绘制到带深度附件的屏幕 render pass 中。
+pipelineLayout pipelineLayout_into3d;
+pipeline pipeline_into3d;
+
+const easyVulkan::renderPassWithFramebuffers& RenderPassAndFramebuffers()
 {
-    // 离屏这边使用单独的画布 render pass。
-    static const auto& rpwf = easyVulkan::CreateRpwf_Canvas(canvasSize);
+    // 这一课开始改用“颜色附件 + 深度模板附件”的屏幕渲染路径。
+    static const auto& rpwf = easyVulkan::CreateRpwf_ScreenWithDS();
     return rpwf;
 }
 
 void CreateLayout()
 {
-    // 离屏画线的顶点着色器要吃一块 push constant：
-    // 一个 vec2 画布尺寸 + 两个 vec2 端点坐标 = 24 字节。
-    VkPushConstantRange pushConstantRange_offscreen = {
+    // 顶点着色器需要一整个 mat4 投影矩阵，所以 push constant 大小是 64 字节。
+    VkPushConstantRange pushConstantRange = {
         VK_SHADER_STAGE_VERTEX_BIT,
         0,
-        24};
+        64};
 
     VkPipelineLayoutCreateInfo pipelineLayoutCreateInfo = {
         .pushConstantRangeCount = 1,
-        .pPushConstantRanges = &pushConstantRange_offscreen};
+        .pPushConstantRanges = &pushConstantRange};
 
-    // 创建离屏画线管线布局。
-    pipelineLayout_line.Create(pipelineLayoutCreateInfo);
-
-    // 屏幕通路需要采样离屏画布，所以先准备一个 combined image sampler 描述符。
-    VkDescriptorSetLayoutBinding descriptorSetLayoutBinding_texture = {
-        .binding = 0,
-        .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-        .descriptorCount = 1,
-        .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT};
-
-    VkDescriptorSetLayoutCreateInfo descriptorSetLayoutCreateInfo_texture = {
-        .bindingCount = 1,
-        .pBindings = &descriptorSetLayoutBinding_texture};
-
-    // 创建屏幕通路的描述符集布局。
-    descriptorSetLayout_texture.Create(descriptorSetLayoutCreateInfo_texture);
-
-    // 屏幕通路的 push constant 有两段范围：
-    // 1. 顶点着色器用的窗口尺寸；
-    // 2. 顶点/片段共用的画布尺寸。
-    VkPushConstantRange pushConstantRanges_screen[] = {
-        {VK_SHADER_STAGE_VERTEX_BIT, 0, 16},
-        {VK_SHADER_STAGE_FRAGMENT_BIT, 8, 8}};
-
-    pipelineLayoutCreateInfo.pushConstantRangeCount = 2;
-    pipelineLayoutCreateInfo.pPushConstantRanges = pushConstantRanges_screen;
-    pipelineLayoutCreateInfo.setLayoutCount = 1;
-    pipelineLayoutCreateInfo.pSetLayouts = descriptorSetLayout_texture.Address();
-
-    // 创建屏幕通路的管线布局。
-    pipelineLayout_screen.Create(pipelineLayoutCreateInfo);
+    // 当前这条 3D 管线不依赖描述符，只要 push constant 即可。
+    pipelineLayout_into3d.Create(pipelineLayoutCreateInfo);
 }
 
-void CreatePipeline(VkExtent2D canvasSize)
+void CreatePipeline()
 {
-    // 离屏通路使用画线着色器。
-    static shaderModule vert_offscreen("shader/Line.vert.spv");
-    static shaderModule frag_offscreen("shader/Line.frag.spv");
+    // 顶点着色器负责把模型点位变换到裁剪空间。
+    static shaderModule vert("shader/Into3d.vert.spv");
 
-    VkPipelineShaderStageCreateInfo shaderStageCreateInfos_line[2] = {
-        vert_offscreen.StageCreateInfo(VK_SHADER_STAGE_VERTEX_BIT),
-        frag_offscreen.StageCreateInfo(VK_SHADER_STAGE_FRAGMENT_BIT)};
+    // 默认使用彩色片段着色器。
+    // 如果想直接观察深度分布，可以把这里改成 "shader/Into3d_visualizeDepth.frag.spv"。
+    static shaderModule frag("shader/Into3d.frag.spv");
 
-    // 先创建离屏画线管线。
-    {
-        graphicsPipelineCreateInfoPack pipelineCiPack;
-
-        pipelineCiPack.SetPipelineLayout(pipelineLayout_line);
-        pipelineCiPack.SetRenderPass(RenderPassAndFramebuffer_Offscreen(canvasSize).renderPass);
-
-        // 输入图元是线段列表。
-        pipelineCiPack.inputAssemblyStateCi.topology = VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
-
-        // 离屏画布的视口和裁剪范围都按画布尺寸来。
-        pipelineCiPack.viewports.emplace_back(
-            0.0f,
-            0.0f,
-            static_cast<float>(canvasSize.width),
-            static_cast<float>(canvasSize.height),
-            0.0f,
-            1.0f);
-        pipelineCiPack.scissors.emplace_back(VkOffset2D{}, canvasSize);
-
-        // 线宽先固定为 1。
-        pipelineCiPack.rasterizationStateCi.lineWidth = 1.0f;
-
-        pipelineCiPack.multisampleStateCi.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
-        pipelineCiPack.colorBlendAttachmentStates.push_back({.colorWriteMask = 0b1111});
-
-        pipelineCiPack.UpdateAllArrays();
-        pipelineCiPack.SetShaderStages(shaderStageCreateInfos_line);
-
-        pipeline_line.Create(pipelineCiPack);
-    }
-
-    // 屏幕通路使用“把画布纹理贴到屏幕矩形上”的着色器。
-    static shaderModule vert_screen("shader/CanvasToScreen.vert.spv");
-    static shaderModule frag_screen("shader/CanvasToScreen.frag.spv");
-
-    static VkPipelineShaderStageCreateInfo shaderStageCreateInfos_screen[2] = {
-        vert_screen.StageCreateInfo(VK_SHADER_STAGE_VERTEX_BIT),
-        frag_screen.StageCreateInfo(VK_SHADER_STAGE_FRAGMENT_BIT)};
+    VkPipelineShaderStageCreateInfo shaderStageCreateInfos[2] = {
+        vert.StageCreateInfo(VK_SHADER_STAGE_VERTEX_BIT),
+        frag.StageCreateInfo(VK_SHADER_STAGE_FRAGMENT_BIT)};
 
     auto Create = [] {
         graphicsPipelineCreateInfoPack pipelineCiPack;
 
-        pipelineCiPack.SetPipelineLayout(pipelineLayout_screen);
-        pipelineCiPack.SetRenderPass(RenderPassAndFramebuffers_Screen().renderPass);
+        // 绑定当前课程使用的管线布局和 render pass。
+        pipelineCiPack.SetPipelineLayout(pipelineLayout_into3d);
+        pipelineCiPack.SetRenderPass(RenderPassAndFramebuffers().renderPass);
 
-        // 屏幕矩形仍然使用 triangle strip。
-        pipelineCiPack.inputAssemblyStateCi.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
+        // 第一个顶点缓冲区按“每顶点”读取 position/color。
+        pipelineCiPack.vertexInputBindings.emplace_back(0, sizeof(vertex), VK_VERTEX_INPUT_RATE_VERTEX);
 
+        // 第二个顶点缓冲区按“每实例”读取立方体整体偏移。
+        pipelineCiPack.vertexInputBindings.emplace_back(1, sizeof(glm::vec3), VK_VERTEX_INPUT_RATE_INSTANCE);
+
+        // location 0 对应 position。
+        pipelineCiPack.vertexInputAttributes.emplace_back(0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(vertex, position));
+
+        // location 1 对应 color。
+        pipelineCiPack.vertexInputAttributes.emplace_back(1, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(vertex, color));
+
+        // location 2 对应实例偏移量。
+        pipelineCiPack.vertexInputAttributes.emplace_back(2, 1, VK_FORMAT_R32G32B32_SFLOAT, 0);
+
+        // 每个面最终由两个三角形组成，所以这里使用 triangle list。
+        pipelineCiPack.inputAssemblyStateCi.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+        // 视口和裁剪矩形都覆盖整个窗口。
         pipelineCiPack.viewports.emplace_back(
             0.0f,
             0.0f,
@@ -141,18 +88,30 @@ void CreatePipeline(VkExtent2D canvasSize)
             1.0f);
         pipelineCiPack.scissors.emplace_back(VkOffset2D{}, windowSize);
 
+        // 开启背面剔除，只保留朝向观察者的面。
+        pipelineCiPack.rasterizationStateCi.cullMode = VK_CULL_MODE_BACK_BIT;
+        pipelineCiPack.rasterizationStateCi.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+
+        // 当前示例不启用 MSAA。
         pipelineCiPack.multisampleStateCi.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+        // 开启深度测试和深度写入，深度更小的片段才能通过。
+        pipelineCiPack.depthStencilStateCi.depthTestEnable = VK_TRUE;
+        pipelineCiPack.depthStencilStateCi.depthWriteEnable = VK_TRUE;
+        pipelineCiPack.depthStencilStateCi.depthCompareOp = VK_COMPARE_OP_LESS;
+
+        // 颜色附件照常写出 RGBA 四个分量。
         pipelineCiPack.colorBlendAttachmentStates.push_back({.colorWriteMask = 0b1111});
 
         pipelineCiPack.UpdateAllArrays();
-        pipelineCiPack.SetShaderStages(shaderStageCreateInfos_screen);
+        pipelineCiPack.SetShaderStages(shaderStageCreateInfos);
 
-        pipeline_screen.Create(pipelineCiPack);
+        pipeline_into3d.Create(pipelineCiPack);
     };
 
     auto Destroy = [] {
-        // 窗口尺寸变化后，屏幕通路管线需要按新视口重建。
-        pipeline_screen.~pipeline();
+        // 交换链尺寸变化后，屏幕相关图形管线需要一起重建。
+        pipeline_into3d.~pipeline();
     };
 
     graphicsBase::Base().AddCallback_CreateSwapchain(Create);
@@ -162,144 +121,163 @@ void CreatePipeline(VkExtent2D canvasSize)
 
 int main()
 {
-    // 本章仍然从常规窗口初始化开始。
-    if (!InitializeWindow(defaultWindowSize))
+    // 3D 画面横向空间更大一点，直接按教程把窗口设成 1280x720。
+    if (!InitializeWindow({1280, 720}))
         return -1;
 
-    // 先把画布大小设成与窗口一致，便于观察。
-    const VkExtent2D canvasSize = windowSize;
+    // 这里拿到的是“带深度附件”的屏幕 render pass 与所有 framebuffer。
+    const auto& [renderPass, framebuffers] = RenderPassAndFramebuffers();
 
-    // 一条 render pass 负责最终呈现到屏幕，另一条负责离屏画布。
-    const auto& [renderPass_screen, framebuffers_screen] = RenderPassAndFramebuffers_Screen();
-    const auto& [renderPass_offscreen, framebuffer_offscreen] = RenderPassAndFramebuffer_Offscreen(canvasSize);
-
-    // 创建布局和两条图形管线。
     CreateLayout();
-    CreatePipeline(canvasSize);
+    CreatePipeline();
 
-    // 常规逐帧同步对象。
-    fence fence(VK_FENCE_CREATE_SIGNALED_BIT);
+    // 逐帧同步对象。
+    fence fence;
     semaphore semaphore_imageIsAvailable;
     semaphore semaphore_renderingIsOver;
 
-    // 只使用一个主命令缓冲区。
+    // 仍然只申请一个主命令缓冲区循环复用。
     commandBuffer commandBuffer;
     commandPool commandPool(
         graphicsBase::Base().QueueFamilyIndex_Graphics(),
         VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT);
     commandPool.AllocateBuffers(commandBuffer);
 
-    // 画布后面要被采样，所以给它准备一个采样器。
-    VkSamplerCreateInfo samplerCreateInfo = texture::SamplerCreateInfo();
-    sampler sampler(samplerCreateInfo);
+    // 24 个顶点分别描述立方体 6 个面的 4 个角点。
+    vertex vertices[] = {
+        // x+ 面。
+        {{1, 1, -1}, {1, 0, 0, 1}},
+        {{1, -1, -1}, {1, 0, 0, 1}},
+        {{1, 1, 1}, {1, 0, 0, 1}},
+        {{1, -1, 1}, {1, 0, 0, 1}},
 
-    // 再创建一个描述符，把离屏画布写进去。
-    const VkDescriptorPoolSize descriptorPoolSizes[] = {
-        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1}};
-    descriptorPool descriptorPool_texture(1, descriptorPoolSizes);
-    descriptorSet descriptorSet_texture;
-    descriptorPool_texture.AllocateSets(descriptorSet_texture, descriptorSetLayout_texture);
-    descriptorSet_texture.Write(easyVulkan::ca_canvas.DescriptorImageInfo(sampler), VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
+        // x- 面。
+        {{-1, 1, 1}, {0, 1, 1, 1}},
+        {{-1, -1, 1}, {0, 1, 1, 1}},
+        {{-1, 1, -1}, {0, 1, 1, 1}},
+        {{-1, -1, -1}, {0, 1, 1, 1}},
 
-    // 屏幕通路的清屏值用白底，便于观察离屏画布被贴回屏幕后的结果。
-    VkClearValue clearColor = {.color = {1.0f, 1.0f, 1.0f, 1.0f}};
+        // y+ 面。
+        {{1, 1, -1}, {0, 1, 0, 1}},
+        {{1, 1, 1}, {0, 1, 0, 1}},
+        {{-1, 1, -1}, {0, 1, 0, 1}},
+        {{-1, 1, 1}, {0, 1, 0, 1}},
 
-    // 先拿一下当前鼠标位置，作为第一条线段的两个端点。
-    double mouseX = 0.0;
-    double mouseY = 0.0;
-    glfwGetCursorPos(pWindow, &mouseX, &mouseY);
+        // y- 面。
+        {{1, -1, -1}, {1, 0, 1, 1}},
+        {{-1, -1, -1}, {1, 0, 1, 1}},
+        {{1, -1, 1}, {1, 0, 1, 1}},
+        {{-1, -1, 1}, {1, 0, 1, 1}},
 
-    struct
+        // z+ 面。
+        {{1, 1, 1}, {0, 0, 1, 1}},
+        {{1, -1, 1}, {0, 0, 1, 1}},
+        {{-1, 1, 1}, {0, 0, 1, 1}},
+        {{-1, -1, 1}, {0, 0, 1, 1}},
+
+        // z- 面。
+        {{-1, 1, -1}, {1, 1, 0, 1}},
+        {{-1, -1, -1}, {1, 1, 0, 1}},
+        {{1, 1, -1}, {1, 1, 0, 1}},
+        {{1, -1, -1}, {1, 1, 0, 1}},
+    };
+
+    // 把逐顶点数据上传到第一个顶点缓冲区。
+    vertexBuffer vertexBuffer_perVertex(sizeof(vertices));
+    vertexBuffer_perVertex.TransferData(vertices);
+
+    // 这 12 个偏移量对应 12 个实例，让多个立方体排成由近到远的阵列。
+    glm::vec3 instanceOffsets[] = {
+        {-4, -4, 6}, {4, -4, 6},
+        {-4, 4, 10}, {4, 4, 10},
+        {-4, -4, 14}, {4, -4, 14},
+        {-4, 4, 18}, {4, 4, 18},
+        {-4, -4, 22}, {4, -4, 22},
+        {-4, 4, 26}, {4, 4, 26},
+    };
+
+    // 把逐实例偏移上传到第二个顶点缓冲区。
+    vertexBuffer vertexBuffer_perInstance(sizeof(instanceOffsets));
+    vertexBuffer_perInstance.TransferData(instanceOffsets);
+
+    // 每个面由两个三角形组成，所以一共是 6 个面 * 6 个索引。
+    uint16_t indices[36] = {0, 1, 2, 2, 1, 3};
+
+    // 后面 5 个面的索引只是在第一个面的基础上整体平移 4 个顶点。
+    for (size_t faceIndex = 1; faceIndex < 6; ++faceIndex)
     {
-        // 画布尺寸，供离屏顶点着色器把像素坐标转成 NDC。
-        glm::vec2 viewportSize;
+        for (size_t triangleIndex = 0; triangleIndex < 6; ++triangleIndex)
+        {
+            indices[faceIndex * 6 + triangleIndex] = static_cast<uint16_t>(indices[triangleIndex] + faceIndex * 4);
+        }
+    }
 
-        // 线段的两个端点。
-        glm::vec2 offsets[2];
-    } pushConstants_offscreen = {
-        {float(canvasSize.width), float(canvasSize.height)},
-        {{float(mouseX), float(mouseY)}, {float(mouseX), float(mouseY)}}};
+    // 索引缓冲区负责复用每个面的 4 个顶点。
+    indexBuffer indexBuffer(sizeof(indices));
+    indexBuffer.TransferData(indices);
 
-    // 为了模拟画板效果：
-    // 1. clearCanvas 为 true 时清空整张画布；
-    // 2. index 用来交替更新两个端点中的一个。
-    bool clearCanvas = true;
-    bool index = false;
+    // 这里直接生成左手系、深度范围为 [0, 1] 的无限远透视投影矩阵。
+    // 再调用 FlipVertical 处理 GLSL 与 Vulkan 在 y 方向上的差异。
+    glm::mat4 proj = FlipVertical(
+        glm::infinitePerspectiveLH_ZO(
+            glm::radians(60.0f),
+            static_cast<float>(windowSize.width) / static_cast<float>(windowSize.height),
+            0.1f));
+
+    // 颜色附件清成黑色，深度附件清成 1.0，表示“当前最远”。
+    VkClearValue clearValues[2] = {
+        {.color = {0.0f, 0.0f, 0.0f, 1.0f}},
+        {.depthStencil = {1.0f, 0}},
+    };
 
     while (!glfwWindowShouldClose(pWindow))
     {
         while (glfwGetWindowAttrib(pWindow, GLFW_ICONIFIED))
             glfwWaitEvents();
 
-        fence.WaitAndReset();
         graphicsBase::Base().SwapImage(semaphore_imageIsAvailable);
-        const uint32_t i = graphicsBase::Base().CurrentImageIndex();
+        const uint32_t imageIndex = graphicsBase::Base().CurrentImageIndex();
 
         commandBuffer.BeginOneTime();
 
-        // 若要求清空画布，就先在 render pass 外用 clear 命令把整张离屏画布刷掉。
-        if (clearCanvas)
-        {
-            easyVulkan::CmdClearCanvas(commandBuffer, VkClearColorValue{});
-            clearCanvas = false;
-        }
+        // 开始带深度附件的 render pass。
+        renderPass.CmdBegin(commandBuffer, framebuffers[imageIndex], {{}, windowSize}, clearValues);
 
-        // 第一段：离屏画线，把鼠标路径渲染到 ca_canvas 上。
-        renderPass_offscreen.CmdBegin(commandBuffer, framebuffer_offscreen, {{}, canvasSize});
-        pipeline_line.CmdBind(commandBuffer);
-        vkCmdPushConstants(commandBuffer, pipelineLayout_line, VK_SHADER_STAGE_VERTEX_BIT, 0, 24, &pushConstants_offscreen);
-        vkCmdDraw(commandBuffer, 2, 1, 0, 0);
-        renderPass_offscreen.CmdEnd(commandBuffer);
+        // 绑定本课唯一一条 3D 图形管线。
+        pipeline_into3d.CmdBind(commandBuffer);
 
-        // 第二段：把离屏画布采样到交换链图像上。
-        renderPass_screen.CmdBegin(
-            commandBuffer,
-            framebuffers_screen[i],
-            {{}, windowSize},
-            clearColor);
-        pipeline_screen.CmdBind(commandBuffer);
+        // 同时绑定逐顶点缓冲区和逐实例缓冲区。
+        VkBuffer vertexBuffers[2] = {vertexBuffer_perVertex, vertexBuffer_perInstance};
+        VkDeviceSize vertexBufferOffsets[2] = {};
+        vkCmdBindVertexBuffers(commandBuffer, 0, 2, vertexBuffers, vertexBufferOffsets);
 
-        // CanvasToScreen.vert 需要窗口尺寸和画布尺寸。
-        const glm::vec2 windowSize_screen = {float(::windowSize.width), float(::windowSize.height)};
-        vkCmdPushConstants(commandBuffer, pipelineLayout_screen, VK_SHADER_STAGE_VERTEX_BIT, 0, 8, &windowSize_screen);
-        vkCmdPushConstants(
-            commandBuffer,
-            pipelineLayout_screen,
-            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-            8,
-            8,
-            &pushConstants_offscreen.viewportSize);
+        // 绑定索引缓冲区，后续 drawIndexed 会按索引顺序取顶点。
+        vkCmdBindIndexBuffer(commandBuffer, indexBuffer, 0, VK_INDEX_TYPE_UINT16);
 
-        vkCmdBindDescriptorSets(
-            commandBuffer,
-            VK_PIPELINE_BIND_POINT_GRAPHICS,
-            pipelineLayout_screen,
-            0,
-            1,
-            descriptorSet_texture.Address(),
-            0,
-            nullptr);
-        vkCmdDraw(commandBuffer, 4, 1, 0, 0);
-        renderPass_screen.CmdEnd(commandBuffer);
+        // 把投影矩阵作为 push constant 传给顶点着色器。
+        vkCmdPushConstants(commandBuffer, pipelineLayout_into3d, VK_SHADER_STAGE_VERTEX_BIT, 0, 64, &proj);
 
+        // 一次绘制 36 个索引、12 个实例。
+        vkCmdDrawIndexed(commandBuffer, 36, 12, 0, 0, 0);
+
+        renderPass.CmdEnd(commandBuffer);
         commandBuffer.End();
 
+        // 因为 render pass 里对子通道的等待阶段设到了 early-fragment-tests，
+        // 所以这里等待交换链图像可用时，最晚也要在该阶段之前完成等待。
         graphicsBase::Base().SubmitCommandBuffer_Graphics(
             commandBuffer,
             semaphore_imageIsAvailable,
             semaphore_renderingIsOver,
-            fence);
+            fence,
+            VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT);
         graphicsBase::Base().PresentImage(semaphore_renderingIsOver);
 
-        // 更新鼠标位置，并把新位置写进另一个端点槽位。
         glfwPollEvents();
-        glfwGetCursorPos(pWindow, &mouseX, &mouseY);
-        pushConstants_offscreen.offsets[index = !index] = {float(mouseX), float(mouseY)};
-
-        // 按住左键时清空画布，松开后继续画。
-        clearCanvas = glfwGetMouseButton(pWindow, GLFW_MOUSE_BUTTON_LEFT);
-
         TitleFps();
+
+        // 本帧 GPU 执行结束后再进入下一帧。
+        fence.WaitAndReset();
     }
 
     TerminateWindow();
