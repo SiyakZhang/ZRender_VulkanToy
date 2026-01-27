@@ -349,6 +349,185 @@ namespace easyVulkan
         return rpwf;
     }
 
+    // 这两张颜色附件分别存放法线/深度与颜色/高光度，供合成子通道读取。
+    inline colorAttachment ca_deferredToScreen_normalZ;
+    inline colorAttachment ca_deferredToScreen_albedoSpecular;
+
+    // 延迟渲染的第一子通道同样需要深度模板附件做深度测试。
+    inline depthStencilAttachment dsa_deferredToScreen;
+
+    const renderPassWithFramebuffers& CreateRpwf_DeferredToScreen(VkFormat depthStencilFormat = VK_FORMAT_D24_UNORM_S8_UINT)
+    {
+        // 这套 render pass 负责“G-Buffer 填充 + 屏幕合成”两步流程。
+        static renderPassWithFramebuffers rpwf;
+
+        // 固定记录一次所选的深度模板格式，交换链重建时继续沿用。
+        static VkFormat s_depthStencilFormat = depthStencilFormat;
+
+        // 4 个附件分别是：交换链、法线+z、颜色+高光、深度模板。
+        VkAttachmentDescription attachmentDescriptions[4] = {
+            {
+                .format = graphicsBase::Base().SwapchainCreateInfo().imageFormat,
+                .samples = VK_SAMPLE_COUNT_1_BIT,
+                .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+                .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+                .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+                .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+                .finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+            },
+            {
+                .format = VK_FORMAT_R16G16B16A16_SFLOAT,
+                .samples = VK_SAMPLE_COUNT_1_BIT,
+                .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+                .storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+                .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+                .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+                .finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            },
+            {
+                .format = VK_FORMAT_R8G8B8A8_UNORM,
+                .samples = VK_SAMPLE_COUNT_1_BIT,
+                .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+                .storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+                .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+                .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+                .finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            },
+            {
+                .format = s_depthStencilFormat,
+                .samples = VK_SAMPLE_COUNT_1_BIT,
+                .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+                .storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+                .stencilLoadOp = s_depthStencilFormat >= VK_FORMAT_S8_UINT ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+                .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+                .finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+            }};
+
+        // 第一个子通道往两张 G-Buffer 写数据，并使用深度测试。
+        VkAttachmentReference attachmentReferences_subpass0[3] = {
+            {1, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},
+            {2, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},
+            {3, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL},
+        };
+
+        // 第二个子通道把两张 G-Buffer 当输入附件读取，并写回交换链颜色附件。
+        VkAttachmentReference attachmentReferences_subpass1[3] = {
+            {1, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+            {2, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+            {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},
+        };
+
+        VkSubpassDescription subpassDescriptions[2] = {
+            {
+                .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
+                .colorAttachmentCount = 2,
+                .pColorAttachments = attachmentReferences_subpass0,
+                .pDepthStencilAttachment = attachmentReferences_subpass0 + 2,
+            },
+            {
+                .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
+                .inputAttachmentCount = 2,
+                .pInputAttachments = attachmentReferences_subpass1,
+                .colorAttachmentCount = 1,
+                .pColorAttachments = attachmentReferences_subpass1 + 2,
+            }};
+
+        // 第一条依赖保证开始 G-Buffer 子通道前深度附件已可写。
+        // 第二条依赖保证写完 G-Buffer 后，composition 子通道再读取输入附件。
+        VkSubpassDependency subpassDependencies[2] = {
+            {
+                .srcSubpass = VK_SUBPASS_EXTERNAL,
+                .dstSubpass = 0,
+                .srcStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                .dstStageMask = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+                .srcAccessMask = 0,
+                .dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+                .dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT,
+            },
+            {
+                .srcSubpass = 0,
+                .dstSubpass = 1,
+                .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                .dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                .dstAccessMask = VK_ACCESS_INPUT_ATTACHMENT_READ_BIT,
+                .dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT,
+            }};
+
+        VkRenderPassCreateInfo renderPassCreateInfo = {
+            .attachmentCount = 4,
+            .pAttachments = attachmentDescriptions,
+            .subpassCount = 2,
+            .pSubpasses = subpassDescriptions,
+            .dependencyCount = 2,
+            .pDependencies = subpassDependencies,
+        };
+        rpwf.renderPass.Create(renderPassCreateInfo);
+
+        auto CreateFramebuffers = [] {
+            // 交换链里的每张图像都对应一套 framebuffer。
+            rpwf.framebuffers.resize(graphicsBase::Base().SwapchainImageCount());
+
+            // 两张 G-Buffer 都只在 render pass 内部使用，所以带上 transient + input attachment 用途。
+            ca_deferredToScreen_normalZ.Create(
+                VK_FORMAT_R16G16B16A16_SFLOAT,
+                windowSize,
+                1,
+                VK_SAMPLE_COUNT_1_BIT,
+                VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT);
+            ca_deferredToScreen_albedoSpecular.Create(
+                VK_FORMAT_R8G8B8A8_UNORM,
+                windowSize,
+                1,
+                VK_SAMPLE_COUNT_1_BIT,
+                VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT);
+            dsa_deferredToScreen.Create(
+                s_depthStencilFormat,
+                windowSize,
+                1,
+                VK_SAMPLE_COUNT_1_BIT,
+                VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT);
+
+            VkImageView attachments[4] = {
+                VK_NULL_HANDLE,
+                ca_deferredToScreen_normalZ.ImageView(),
+                ca_deferredToScreen_albedoSpecular.ImageView(),
+                dsa_deferredToScreen.ImageView(),
+            };
+
+            VkFramebufferCreateInfo framebufferCreateInfo = {
+                .renderPass = rpwf.renderPass,
+                .attachmentCount = 4,
+                .pAttachments = attachments,
+                .width = windowSize.width,
+                .height = windowSize.height,
+                .layers = 1,
+            };
+
+            for (size_t i = 0; i < graphicsBase::Base().SwapchainImageCount(); ++i)
+            {
+                // 只有第 0 个附件需要随着交换链图像索引变化，其余三个都是共用附件。
+                attachments[0] = graphicsBase::Base().SwapchainImageView(static_cast<uint32_t>(i));
+                rpwf.framebuffers[i].Create(framebufferCreateInfo);
+            }
+        };
+
+        auto DestroyFramebuffers = [] {
+            // 交换链销毁前，先释放 G-Buffer 和深度附件，再清空 framebuffer 列表。
+            ca_deferredToScreen_normalZ.~colorAttachment();
+            ca_deferredToScreen_albedoSpecular.~colorAttachment();
+            dsa_deferredToScreen.~depthStencilAttachment();
+            rpwf.framebuffers.clear();
+        };
+
+        CreateFramebuffers();
+
+        ExecuteOnce(rpwf);
+        graphicsBase::Base().AddCallback_CreateSwapchain(CreateFramebuffers);
+        graphicsBase::Base().AddCallback_DestroySwapchain(DestroyFramebuffers);
+        return rpwf;
+    }
+
     void BootScreen(const char* imagePath, VkFormat imageFormat)
     {
         // 先把启动图从磁盘读进内存。
