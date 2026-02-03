@@ -528,6 +528,417 @@ namespace easyVulkan
         return rpwf;
     }
 
+    // 若需要把转换后的像素数据再拷回 CPU，可通过这个回调拿到 mip0 数据。
+    using callback_copyData_t = void (*)(const void* pData, VkDeviceSize dataSize);
+
+    class fCreateTexture2d_multiplyAlpha
+    {
+    protected:
+        // 最终贴图格式。
+        VkFormat format_final = VK_FORMAT_UNDEFINED;
+
+        // 是否要顺手生成 mipmap。
+        bool generateMipmap = false;
+
+        // 若非空，就在生成完贴图后把第 0 级数据回传给调用方。
+        callback_copyData_t callback_copyData = nullptr;
+
+        // 这套小型 render pass + pipeline 专门用于“把 RGB 乘以 A”。
+        renderPass renderPass;
+        pipeline pipeline;
+
+        void CmdTransferDataToImage(
+            VkCommandBuffer commandBuffer,
+            const uint8_t* pImageData,
+            VkExtent2D extent,
+            VkFormat format_initial,
+            imageMemory& imageMemory_conversion,
+            VkImage image) const
+        {
+            // 这里准备两种目标状态：
+            // 1. 若后面直接进 color attachment 混色，就切到 COLOR_ATTACHMENT_OPTIMAL；
+            // 2. 若后面还要先 blit 一次，就切到 TRANSFER_SRC_OPTIMAL。
+            static constexpr imageOperation::imageMemoryBarrierParameterPack imbs[2] = {
+                {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_READ_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},
+                {VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL},
+            };
+
+            const VkDeviceSize imageDataSize = VkDeviceSize(FormatInfo(format_initial).sizePerPixel) * extent.width * extent.height;
+
+            // 先把原始像素写进 staging buffer。
+            stagingBuffer::BufferData_MainThread(pImageData, imageDataSize);
+
+            // image_copyTo 指 staging buffer 将直接 copy 到哪张图像。
+            // image_conversion 指需要参与 blit 的那张“源图像”。
+            // image_blitTo 指最终要被渲染成预乘 Alpha 的那张图像。
+            VkImage image_copyTo = VK_NULL_HANDLE;
+            VkImage image_conversion = VK_NULL_HANDLE;
+            VkImage image_blitTo = VK_NULL_HANDLE;
+
+            if (format_initial == format_final)
+            {
+                // 如果源格式和目标格式相同，就可以直接 copy 到最终图像。
+                image_copyTo = image;
+            }
+            else
+            {
+                // 若格式不同，优先尝试把 staging buffer 直接别名成线性 tiling 图像。
+                image_conversion = stagingBuffer::AliasedImage2d_MainThread(format_initial, extent);
+
+                if (!image_conversion)
+                {
+                    // 如果别名失败，就创建一张 device-local 中转图像。
+                    VkImageCreateInfo imageCreateInfo = {
+                        .imageType = VK_IMAGE_TYPE_2D,
+                        .format = format_initial,
+                        .extent = {extent.width, extent.height, 1},
+                        .mipLevels = 1,
+                        .arrayLayers = 1,
+                        .samples = VK_SAMPLE_COUNT_1_BIT,
+                        .usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT};
+
+                    imageMemory_conversion.Create(imageCreateInfo, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+                    image_copyTo = image_conversion = imageMemory_conversion.Image();
+                }
+
+                // 最终都要再 blit 到真正的目标图像上。
+                image_blitTo = image;
+            }
+
+            if (image_copyTo)
+            {
+                // 先把 staging buffer 数据 copy 到 image_copyTo。
+                VkBufferImageCopy region = {
+                    .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                    .imageExtent = {extent.width, extent.height, 1}};
+
+                imageOperation::CmdCopyBufferToImage(
+                    commandBuffer,
+                    stagingBuffer::Buffer_MainThread(),
+                    image_copyTo,
+                    region,
+                    {VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 0, VK_IMAGE_LAYOUT_UNDEFINED},
+                    imbs[bool(image_blitTo)]);
+            }
+
+            if (image_blitTo)
+            {
+                if (!image_copyTo)
+                {
+                    // 走别名路径时，线性 tiling 图像初始布局是 PREINITIALIZED，
+                    // 这里先把它切成 transfer-src。
+                    VkImageMemoryBarrier imageMemoryBarrier = {
+                        VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                        nullptr,
+                        0,
+                        VK_ACCESS_TRANSFER_READ_BIT,
+                        VK_IMAGE_LAYOUT_PREINITIALIZED,
+                        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                        VK_QUEUE_FAMILY_IGNORED,
+                        VK_QUEUE_FAMILY_IGNORED,
+                        image_conversion,
+                        {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+
+                    vkCmdPipelineBarrier(
+                        commandBuffer,
+                        VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                        VK_PIPELINE_STAGE_TRANSFER_BIT,
+                        0,
+                        0,
+                        nullptr,
+                        0,
+                        nullptr,
+                        1,
+                        &imageMemoryBarrier);
+                }
+
+                // 再把源图像等尺寸 blit 到最终图像上，顺便完成格式转换。
+                VkImageBlit region = {
+                    {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                    {{}, {int32_t(extent.width), int32_t(extent.height), 1}},
+                    {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                    {{}, {int32_t(extent.width), int32_t(extent.height), 1}}};
+
+                imageOperation::CmdBlitImage(
+                    commandBuffer,
+                    image_conversion,
+                    image_blitTo,
+                    region,
+                    {VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 0, VK_IMAGE_LAYOUT_UNDEFINED},
+                    {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_READ_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL});
+            }
+        }
+
+        // 这套 helper pipeline 用一个固定的全屏矩形顶点着色器和“什么都不输出”的片段着色器。
+        static constexpr const char* filepath_vert = "shader/RenderToImage2d_NoUV.vert.spv";
+        static constexpr const char* filepath_frag = "shader/RenderNothing.frag.spv";
+
+        static VkPipelineShaderStageCreateInfo Ssci_Vert()
+        {
+            static shaderModule shader;
+
+            if (!shader)
+            {
+                shader.Create(filepath_vert);
+                graphicsBase::Base().AddCallback_DestroyDevice([] { shader.~shaderModule(); });
+            }
+
+            return shader.StageCreateInfo(VK_SHADER_STAGE_VERTEX_BIT);
+        }
+
+        static VkPipelineShaderStageCreateInfo Ssci_Frag()
+        {
+            static shaderModule shader;
+
+            if (!shader)
+            {
+                shader.Create(filepath_frag);
+                graphicsBase::Base().AddCallback_DestroyDevice([] { shader.~shaderModule(); });
+            }
+
+            return shader.StageCreateInfo(VK_SHADER_STAGE_FRAGMENT_BIT);
+        }
+
+        static VkPipelineLayout PipelineLayout()
+        {
+            static pipelineLayout pipelineLayout;
+
+            if (!pipelineLayout)
+            {
+                VkPipelineLayoutCreateInfo pipelineLayoutCreateInfo = {};
+                pipelineLayout.Create(pipelineLayoutCreateInfo);
+                graphicsBase::Base().AddCallback_DestroyDevice([] { pipelineLayout.~pipelineLayout(); });
+            }
+
+            return pipelineLayout;
+        }
+
+    public:
+        fCreateTexture2d_multiplyAlpha() = default;
+
+        fCreateTexture2d_multiplyAlpha(VkFormat format_final, bool generateMipmap, callback_copyData_t callback_copyMipLevel0)
+        {
+            Instantiate(format_final, generateMipmap, callback_copyMipLevel0);
+        }
+
+        fCreateTexture2d_multiplyAlpha(fCreateTexture2d_multiplyAlpha&&) = default;
+
+        texture2d operator()(const char* filepath, VkFormat format_initial) const
+        {
+            VkExtent2D extent{};
+            auto pImageData = texture::LoadFile(filepath, extent, FormatInfo(format_initial));
+
+            if (pImageData)
+                return (*this)(pImageData.get(), extent, format_initial);
+
+            return texture2d{};
+        }
+
+        texture2d operator()(const uint8_t* pImageData, VkExtent2D extent, VkFormat format_initial) const
+        {
+            texture2d texture;
+            imageMemory imageMemory_conversion;
+
+            // 如果后面要把 mip0 拷回 CPU，就先确保 staging buffer 对源/目标尺寸都够大。
+            const uint32_t pixelCount = extent.width * extent.height;
+            const VkDeviceSize imageDataSize_initial = VkDeviceSize(FormatInfo(format_initial).sizePerPixel) * pixelCount;
+            const VkDeviceSize imageDataSize_final = VkDeviceSize(FormatInfo(format_final).sizePerPixel) * pixelCount;
+            if (callback_copyData)
+                stagingBuffer::Expand_MainThread(std::max(imageDataSize_initial, imageDataSize_final));
+
+            // 通过局部派生类拿到 texture2d 里受保护的图像/视图成员。
+            struct texture2d_local : texture2d
+            {
+                using texture::imageMemory;
+                using texture::imageView;
+                using texture2d::extent;
+            };
+
+            auto* pTexture = static_cast<texture2d_local*>(&texture);
+            pTexture->extent = extent;
+
+            // 先创建最终目标图像。
+            const uint32_t mipLevelCount = generateMipmap ? texture::CalculateMipLevelCount(extent) : 1;
+            VkImageCreateInfo imageCreateInfo = {
+                .imageType = VK_IMAGE_TYPE_2D,
+                .format = format_final,
+                .extent = {extent.width, extent.height, 1},
+                .mipLevels = mipLevelCount,
+                .arrayLayers = 1,
+                .samples = VK_SAMPLE_COUNT_1_BIT,
+                .usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT};
+            pTexture->imageMemory.Create(imageCreateInfo, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+            VkImage image = pTexture->imageMemory.Image();
+
+            // 先为 mip0 建一个临时 image view，用它挂到 framebuffer 上做一次“预乘 Alpha 渲染”。
+            pTexture->imageView.Create(image, VK_IMAGE_VIEW_TYPE_2D, format_final, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1});
+            VkFramebufferCreateInfo framebufferCreateInfo = {
+                .renderPass = renderPass,
+                .attachmentCount = 1,
+                .pAttachments = pTexture->imageView.Address(),
+                .width = extent.width,
+                .height = extent.height,
+                .layers = 1};
+            framebuffer framebuffer(framebufferCreateInfo);
+
+            {
+                auto& commandBuffer = graphicsBase::Plus().CommandBuffer_Transfer();
+                commandBuffer.BeginOneTime();
+
+                // 先把源数据搬进目标图像，并切到 color-attachment-optimal。
+                CmdTransferDataToImage(commandBuffer, pImageData, extent, format_initial, imageMemory_conversion, image);
+
+                // 开始那次“把 RGB 乘以 A”的离屏渲染。
+                renderPass.CmdBegin(commandBuffer, framebuffer, {{}, extent});
+                pipeline.CmdBind(commandBuffer);
+
+                // 视口是动态状态，这里按当前贴图尺寸设置。
+                VkViewport viewport = {
+                    0.0f,
+                    0.0f,
+                    float(extent.width),
+                    float(extent.height),
+                    0.0f,
+                    1.0f};
+                vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
+
+                // 画一个全屏矩形，真正的“RGB *= A”由混色状态完成。
+                vkCmdDraw(commandBuffer, 4, 1, 0, 0);
+                renderPass.CmdEnd(commandBuffer);
+
+                if (callback_copyData)
+                {
+                    // 若调用方要拿回数据，就把乘完 Alpha 的 mip0 再拷回 staging buffer。
+                    VkBufferImageCopy region = {
+                        .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                        .imageExtent = {extent.width, extent.height, 1}};
+                    vkCmdCopyImageToBuffer(
+                        commandBuffer,
+                        image,
+                        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                        stagingBuffer::Buffer_MainThread(),
+                        1,
+                        &region);
+                }
+
+                // 若要生成 mipmap 或回读数据，就让图像继续保持 transfer-src；
+                // 否则 render pass 已经把它收尾到 shader-read-only。
+                if (mipLevelCount > 1 || callback_copyData)
+                {
+                    imageOperation::CmdGenerateMipmap2d(
+                        commandBuffer,
+                        image,
+                        extent,
+                        mipLevelCount,
+                        1,
+                        {VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL});
+                }
+
+                commandBuffer.End();
+                graphicsBase::Plus().ExecuteCommandBuffer_Graphics(commandBuffer);
+            }
+
+            if (callback_copyData)
+            {
+                // 把转换后的 mip0 数据交给外部回调处理。
+                callback_copyData(stagingBuffer::MapMemory_MainThread(imageDataSize_final), imageDataSize_final);
+                stagingBuffer::UnmapMemory_MainThread();
+            }
+
+            if (mipLevelCount > 1)
+            {
+                // 若生成了 mipmap，就把 image view 改成覆盖整条 mip 链。
+                pTexture->imageView.~imageView();
+                pTexture->imageView.Create(image, VK_IMAGE_VIEW_TYPE_2D, format_final, {VK_IMAGE_ASPECT_COLOR_BIT, 0, mipLevelCount, 0, 1});
+            }
+
+            return texture;
+        }
+
+        void Instantiate(VkFormat format_final, bool generateMipmap, callback_copyData_t callback_copyMipLevel0)
+        {
+            this->format_final = format_final;
+            this->generateMipmap = generateMipmap;
+            callback_copyData = callback_copyMipLevel0;
+
+            // 这条 render pass 只服务一张颜色附件，并依靠混色状态把 RGB 乘上 A。
+            VkAttachmentDescription attachmentDescription = {
+                .format = format_final,
+                .samples = VK_SAMPLE_COUNT_1_BIT,
+                .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
+                .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+                .initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                .finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+
+            VkAttachmentReference attachmentReference = {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+
+            VkSubpassDescription subpassDescription = {
+                .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
+                .colorAttachmentCount = 1,
+                .pColorAttachments = &attachmentReference};
+
+            // 若后面还要回读数据或继续生成 mip，则 render pass 结束后保持 transfer-src。
+            VkSubpassDependency subpassDependency = {
+                .srcSubpass = 0,
+                .dstSubpass = VK_SUBPASS_EXTERNAL,
+                .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                .dstStageMask = VK_PIPELINE_STAGE_TRANSFER_BIT,
+                .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT};
+
+            VkRenderPassCreateInfo renderPassCreateInfo = {
+                .attachmentCount = 1,
+                .pAttachments = &attachmentDescription,
+                .subpassCount = 1,
+                .pSubpasses = &subpassDescription};
+
+            if (generateMipmap || callback_copyData)
+            {
+                attachmentDescription.finalLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+                renderPassCreateInfo.dependencyCount = 1;
+                renderPassCreateInfo.pDependencies = &subpassDependency;
+            }
+
+            renderPass.Create(renderPassCreateInfo);
+
+            // 再创建那条专门把 RGB 乘上 A 的图形管线。
+            graphicsPipelineCreateInfoPack pipelineCiPack;
+            pipelineCiPack.SetPipelineLayout(PipelineLayout());
+            pipelineCiPack.SetRenderPass(renderPass);
+
+            const VkPipelineShaderStageCreateInfo shaderStages[] = {
+                Ssci_Vert(),
+                Ssci_Frag()};
+            pipelineCiPack.SetShaderStages(shaderStages);
+
+            pipelineCiPack.inputAssemblyStateCi.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
+            pipelineCiPack.scissors.emplace_back(
+                VkOffset2D{},
+                VkExtent2D{
+                    graphicsBase::Base().PhysicalDeviceProperties().limits.maxFramebufferWidth,
+                    graphicsBase::Base().PhysicalDeviceProperties().limits.maxFramebufferHeight});
+            pipelineCiPack.multisampleStateCi.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+            // 混色公式核心是：
+            // 新 RGB = 0 * src.rgb + dst.a * dst.rgb，即把原图 RGB 乘上原图 A；
+            // 新 A   = 0 * src.a   + 1 * dst.a      ，保持原来的 Alpha 不变。
+            pipelineCiPack.colorBlendAttachmentStates.push_back({
+                .blendEnable = VK_TRUE,
+                .srcColorBlendFactor = VK_BLEND_FACTOR_ZERO,
+                .dstColorBlendFactor = VK_BLEND_FACTOR_DST_ALPHA,
+                .colorBlendOp = VK_BLEND_OP_ADD,
+                .srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO,
+                .dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE,
+                .alphaBlendOp = VK_BLEND_OP_ADD,
+                .colorWriteMask = 0b1111});
+
+            // 视口在真正处理每张贴图时按实际尺寸动态设置。
+            pipelineCiPack.dynamicStates.push_back(VK_DYNAMIC_STATE_VIEWPORT);
+            pipelineCiPack.UpdateAllArrays();
+            pipeline.Create(pipelineCiPack);
+        }
+    };
+
     void BootScreen(const char* imagePath, VkFormat imageFormat)
     {
         // 先把启动图从磁盘读进内存。
