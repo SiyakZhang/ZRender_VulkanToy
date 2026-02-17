@@ -1,5 +1,6 @@
 #pragma once
 #include "VKHead.h"
+#include "GlslCompiler.hpp"
 #define VK_RESULT_THROW
 
 #define DestroyHandleBy(Func) if (handle) { Func(graphicsBase::Base().Device(), handle, nullptr); handle = VK_NULL_HANDLE; }
@@ -2473,6 +2474,28 @@ namespace vulkan
         {
             // 有些时候 SPIR-V 已经在内存里，这个重载可以避免额外组装指针和字节数。
             return Create(codes.Count() * sizeof(uint32_t), codes.Pointer());
+        }
+
+        result_t CreateFromGlsl(std::span<const char> code, const char* filepath, const char* entry = "main")
+        {
+            // 运行期把 GLSL 编译到 SPIR-V，再立即创建 VkShaderModule。
+            fCompileGlslToSpv compiler;
+            const std::span<const uint32_t> codes = compiler(code, filepath, entry);
+            if (codes.empty())
+                return VK_RESULT_MAX_ENUM;
+
+            return Create(arrayRef<const uint32_t>(codes.data(), codes.size()));
+        }
+
+        result_t CreateFromGlsl(const char* filepath, const char* entry = "main")
+        {
+            // 文件路径版本会先读取 GLSL 文件，再解析其中的 #include 并编译。
+            fCompileGlslToSpv compiler;
+            const std::span<const uint32_t> codes = compiler(filepath, entry);
+            if (codes.empty())
+                return VK_RESULT_MAX_ENUM;
+
+            return Create(arrayRef<const uint32_t>(codes.data(), codes.size()));
         }
 
         result_t Create(size_t codeSize, const uint32_t* pCode /*reserved for future use*/)

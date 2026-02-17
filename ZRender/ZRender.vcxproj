@@ -142,6 +142,7 @@
     <ClCompile Include="main.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="GlslCompiler.hpp" />
     <ClInclude Include="GlfwGeneral.hpp" />
     <ClInclude Include="RPFB_Screen.hpp" />
     <ClInclude Include="stb_image.h" />

@@ -20,6 +20,9 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="GlslCompiler.hpp">
+      <Filter>头文件</Filter>
+    </ClInclude>
     <ClInclude Include="VKHead.h">
       <Filter>头文件</Filter>
     </ClInclude>
