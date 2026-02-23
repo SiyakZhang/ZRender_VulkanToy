@@ -8,7 +8,7 @@ namespace vulkan
     struct formatInfo
     {
         // rawDataType 用来描述底层数据更接近整数、浮点还是混合/其他类型。
-        enum rawDataType : uint8_t
+        enum rawDataType_t : uint8_t
         {
             other,
             integer,
@@ -25,36 +25,36 @@ namespace vulkan
         uint8_t sizePerPixel = 0;
 
         // 底层原始数据类型。
-        uint8_t rawDataType = other;
+        rawDataType_t rawDataType = other;
     };
 
     // Vulkan 1.0 的“确定格式”范围到 ASTC_12x12_SRGB_BLOCK 为止。
-    constexpr size_t formatInfoCount_v1_0 = size_t(VK_FORMAT_ASTC_12X12_SRGB_BLOCK) + 1;
+    constexpr size_t formatInfoCount_v1_0 = size_t(VK_FORMAT_ASTC_12x12_SRGB_BLOCK) + 1;
 
     // 普通“每个分量等宽”的格式可以统一通过这个辅助函数构造。
     constexpr formatInfo MakeFormatInfo(
         uint8_t componentCount,
         uint8_t sizePerComponent,
-        formatInfo::rawDataType rawDataType)
+        formatInfo::rawDataType_t rawDataType)
     {
-        return {
+        return formatInfo{
             componentCount,
             sizePerComponent,
             static_cast<uint8_t>(componentCount * sizePerComponent),
-            static_cast<uint8_t>(rawDataType)};
+            rawDataType};
     }
 
     // packed / depth-stencil 这类“不适合按分量等宽理解”的格式走这个辅助函数。
     constexpr formatInfo MakePackedFormatInfo(
         uint8_t componentCount,
         uint8_t sizePerPixel,
-        formatInfo::rawDataType rawDataType)
+        formatInfo::rawDataType_t rawDataType)
     {
-        return {
+        return formatInfo{
             componentCount,
             0,
             sizePerPixel,
-            static_cast<uint8_t>(rawDataType)};
+            rawDataType};
     }
 
     // 返回当前格式最常用的基础描述。

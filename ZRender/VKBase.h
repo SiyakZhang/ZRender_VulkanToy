@@ -214,8 +214,8 @@ namespace vulkan
             };
             VkInstanceCreateInfo instanceCreateInfo = {
                 .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
-                .flags = flags,
                 .pNext = pNext_instanceCreateInfo,
+                .flags = flags,
                 .pApplicationInfo = &applicatianInfo,
                 .enabledLayerCount = uint32_t(instanceLayers.size()),
                 .ppEnabledLayerNames = instanceLayers.data(),
