@@ -6,8 +6,8 @@
 #ifdef NDEBUG
 #pragma comment(lib, "shaderc_combined.lib")
 #else
-// Debug 下使用 shaderc_shared，对应 Vulkan SDK 自带的调试版动态库。
-#pragma comment(lib, "shaderc_shared.lib")
+// Debug 下优先链接 SDK 自带的 debug 版 combined 库，避免混入 release CRT。
+#pragma comment(lib, "shaderc_combinedd.lib")
 #endif
 
 namespace vulkan

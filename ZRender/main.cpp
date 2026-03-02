@@ -51,7 +51,7 @@ void CreateLayout()
     VkPushConstantRange pushConstantRange = {
         .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
         .offset = 0,
-        .size = sizeof(float)};
+        .size = uint32_t(sizeof(float))};
 
     VkPipelineLayoutCreateInfo pipelineLayoutCreateInfo = {
         .setLayoutCount = 1,
@@ -86,9 +86,9 @@ void CreatePipeline()
         pipelineCiPack_texture.SetRenderPass(RenderPassAndFramebuffers().renderPass);
 
         // 顶点结构里只有 position 和 texCoord 两项。
-        pipelineCiPack_texture.vertexInputBindings.emplace_back(0, sizeof(vertex), VK_VERTEX_INPUT_RATE_VERTEX);
-        pipelineCiPack_texture.vertexInputAttributes.emplace_back(0, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(vertex, position));
-        pipelineCiPack_texture.vertexInputAttributes.emplace_back(1, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(vertex, texCoord));
+        pipelineCiPack_texture.vertexInputBindings.emplace_back(0, uint32_t(sizeof(vertex)), VK_VERTEX_INPUT_RATE_VERTEX);
+        pipelineCiPack_texture.vertexInputAttributes.emplace_back(0, 0, VK_FORMAT_R32G32_SFLOAT, uint32_t(offsetof(vertex, position)));
+        pipelineCiPack_texture.vertexInputAttributes.emplace_back(1, 0, VK_FORMAT_R32G32_SFLOAT, uint32_t(offsetof(vertex, texCoord)));
 
         // 每 4 个顶点用 triangle strip 组成一个矩形。
         pipelineCiPack_texture.inputAssemblyStateCi.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
@@ -302,7 +302,7 @@ int main()
                 nullptr);
 
             // 把亮度缩放参数传给片段着色器。
-            vkCmdPushConstants(commandBuffer, pipelineLayout_texture, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(float), &brightnessScale);
+            vkCmdPushConstants(commandBuffer, pipelineLayout_texture, VK_SHADER_STAGE_FRAGMENT_BIT, 0, uint32_t(sizeof(float)), &brightnessScale);
 
             // 画出 HDR 贴图矩形。
             vkCmdDraw(commandBuffer, 4, 1, 0, 0);
@@ -322,7 +322,7 @@ int main()
                 nullptr);
 
             // 同样把亮度缩放值塞给片段着色器。
-            vkCmdPushConstants(commandBuffer, pipelineLayout_texture, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(float), &brightnessScale);
+            vkCmdPushConstants(commandBuffer, pipelineLayout_texture, VK_SHADER_STAGE_FRAGMENT_BIT, 0, uint32_t(sizeof(float)), &brightnessScale);
 
             // 全屏顶点着色器内部自己根据 gl_VertexIndex 生成矩形。
             vkCmdDraw(commandBuffer, 4, 1, 0, 0);

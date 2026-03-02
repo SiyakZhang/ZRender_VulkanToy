@@ -1641,11 +1641,11 @@ namespace vulkan
                 &handle,
                 stage_from,
                 stage_to,
-                memoryBarriers.Count(),
+                uint32_t(memoryBarriers.Count()),
                 memoryBarriers.Pointer(),
-                bufferMemoryBarriers.Count(),
+                uint32_t(bufferMemoryBarriers.Count()),
                 bufferMemoryBarriers.Pointer(),
-                imageMemoryBarriers.Count(),
+                uint32_t(imageMemoryBarriers.Count()),
                 imageMemoryBarriers.Pointer());
         }
 
@@ -2970,7 +2970,7 @@ namespace vulkan
             if (!buffers.Count())
                 return;
 
-            vkFreeCommandBuffers(graphicsBase::Base().Device(), handle, buffers.Count(), buffers.Pointer());
+            vkFreeCommandBuffers(graphicsBase::Base().Device(), handle, uint32_t(buffers.Count()), buffers.Pointer());
             memset(buffers.Pointer(), 0, buffers.Count() * sizeof(VkCommandBuffer));
         }
 
