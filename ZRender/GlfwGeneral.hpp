@@ -2,7 +2,7 @@
 #include "VKBase.h"
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
-#pragma comment(lib, "glfw3.lib") //链接编译所需的静态库
+#pragma comment(lib, "glfw3dll.lib") //改为链接 GLFW 的导入库，避免把 release 静态库里的 CRT 设定混进当前工程
 
 //窗口的指针，全局变量自动初始化为NULL
 inline GLFWwindow* pWindow;
