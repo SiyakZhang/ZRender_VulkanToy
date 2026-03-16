@@ -1,6 +1,7 @@
 # IDE 与本地配置目录。
 .idea/
 .vs/
+CMakeUserPresets.json
 
 # Visual Studio 用户态文件。
 *.user
